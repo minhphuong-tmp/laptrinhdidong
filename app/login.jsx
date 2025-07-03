@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useRef, useState } from 'react'
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
 import Icon from '../assets/icons'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
@@ -22,7 +22,7 @@ const Login = () => {
 
     const onSubmit = async () => {
         if (!emailRef.current || !passwordRef.current) {
-            Alert.alert('Login', "please fill all the fields!");
+            Alert.alert('Đăng nhập', "Làm ơn nhập đầy đủ thông tin!");
             return;
         }
 
@@ -33,13 +33,11 @@ const Login = () => {
 
         const { data: { session }, error } = await supabase.auth.signInWithPassword({
             email,
-            password
+            password,
         });
 
-        setLoading(false);
 
-        console.log('session: ', session);
-        console.log('error: ', error);
+        setLoading(false);
 
         if (error) {
             Alert.alert('Login', error.message);
@@ -50,50 +48,52 @@ const Login = () => {
     return (
         <ScreenWrapper>
             <StatusBar style="dark" />
+            <TouchableWithoutFeedback onPress={Keyboard.dismiss}  >
 
-            <View style={styles.container}>
-                <BackButton router={router} />
+                <View style={styles.container}>
+                    <BackButton router={router} />
 
-                {/* WELCOME */}
-                <View>
-                    <Text style={styles.welcometext}>Hey,</Text>
-                    <Text style={styles.welcometext}>Welcome Back</Text>
-                </View>
+                    {/* WELCOME */}
+                    <View>
+                        <Text style={styles.welcometext}>Xin chào,</Text>
+                        <Text style={styles.welcometext}>Chào mừng bạn quay trở lại</Text>
+                    </View>
 
-                {/* form */}
-                <View style={styles.form}>
-                    <Text style={{ fontSize: hp(1.5), color: theme.colors.text }}>
-                        Please login to continue
-                    </Text>
-                    <Input
-                        icon={<Icon name="mail" size={26} strokeWidth={1.6} />}
-                        placeholder='Enter your email'
-                        onChangeText={value => emailRef.current = value}
-                    />
-                    <Input
-                        icon={<Icon name="lock" size={26} strokeWidth={1.6} />}
-                        placeholder='Enter your password'
-                        secureTextEntry
-                        onChangeText={value => passwordRef.current = value}
-                    />
-                    <Text style={styles.forgotPassword}>
-                        Forgot Password?
-                    </Text>
-                    {/* button */}
-                    <Button title={'Login'} loading={loading} onPress={onSubmit} />
-
-                </View>
-                {/* footer */}
-                <View style={styles.footer}>
-                    <Text style={styles.footerText}>Don't have an account ?</Text>
-                    <Pressable onPress={() => router.push('signUp')}>
-                        <Text style={[styles.footerText, { color: theme.colors.primaryDark, fontWeight: theme.fonts.semiBold }]}>
-                            Sign Up
+                    {/* form */}
+                    <View style={styles.form}>
+                        <Text style={{ fontSize: hp(1.5), color: theme.colors.text }}>
+                            Nhấn nút Đăng nhập để tiếp tục
                         </Text>
-                    </Pressable>
+                        <Input
+                            icon={<Icon name="mail" size={26} strokeWidth={1.6} />}
+                            placeholder='Nhập email'
+                            onChangeText={value => emailRef.current = value}
+                        />
+                        <Input
+                            icon={<Icon name="lock" size={26} strokeWidth={1.6} />}
+                            placeholder='Nhập mật khẩu'
+                            secureTextEntry
+                            onChangeText={value => passwordRef.current = value}
+                        />
+                        <Text style={styles.forgotPassword}>
+                            Quên mật khẩu ?
+                        </Text>
+                        {/* button */}
+                        <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
 
+                    </View>
+                    {/* footer */}
+                    <View style={styles.footer}>
+                        <Text style={styles.footerText}>Không có tài khoản ?</Text>
+                        <Pressable onPress={() => router.push('signUp')}>
+                            <Text style={[styles.footerText, { color: theme.colors.primaryDark, fontWeight: theme.fonts.semiBold }]}>
+                                Đăng nhập
+                            </Text>
+                        </Pressable>
+
+                    </View>
                 </View>
-            </View>
+            </TouchableWithoutFeedback>
         </ScreenWrapper>
     )
 }
