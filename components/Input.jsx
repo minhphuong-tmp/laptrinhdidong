@@ -1,6 +1,6 @@
-import { StyleSheet, TextInput, View } from 'react-native'
-import { theme } from '../constants/theme'
-import { hp } from '../helpers/common'
+import { StyleSheet, TextInput, View } from 'react-native';
+import { theme } from '../constants/theme';
+import { hp } from '../helpers/common';
 
 
 const Input = (props) => {
@@ -30,6 +30,6 @@ const styles = StyleSheet.create({
         borderRadius: theme.radius.xxl,
         borderCurve: 'continuous',
         paddingHorizontal: 18,
-        gap: 12
+        gap: 12,
     }
 })

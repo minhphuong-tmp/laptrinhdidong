@@ -1,5 +1,6 @@
 import { theme } from '../../constants/theme';
 import ArrowLeft from './ArrowLeft';
+import Bio from './Bio';
 import Call from './Call';
 import Camera from './Camera';
 import Chat from './Chat';
@@ -21,8 +22,8 @@ import ThreeDotsCircle from './ThreeDotsCircle';
 import ThreeDotsHorizontal from './ThreeDotsHorizontal';
 import User from './User';
 import Video from './Video';
-
 const icons = {
+  bio: Bio,
   chat: Chat,
   home: Home,
   mail: Mail,

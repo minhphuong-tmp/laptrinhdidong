@@ -25,7 +25,7 @@ const Welcome = () => {
           <View style={{ gap: 20 }}>
             <Text style={styles.title}>LinkUp!</Text>
             <Text style={styles.punchline}>
-              Where every thought finds a home and every image tells a story.
+              Nơi để mà bạn có thể cùng nhau chia sẻ khoảnh khắc
             </Text>
           </View>
         </View>
@@ -33,21 +33,21 @@ const Welcome = () => {
         {/* FOOTER */}
         <View style={styles.footer}>
           <Button
-            title="Get Started"
+            title="Bắt đầu"
             buttonStyle={{ marginHorizontal: wp(3) }}
             onPress={() => router.push('signUp')}
           />
 
           <View style={styles.bottomTextContainer}>
             <Text style={styles.loginText}>
-              Already have an account !
+              Đã có tài khoản !
 
             </Text>
 
             <Pressable onPress={() => router.push('login')}>
 
               <Text style={[styles.loginText, { color: theme.colors.primaryDark, fontWeight: theme.fonts.semiBold }]}>
-                Login
+                Đăng nhập
               </Text>
             </Pressable>
 
