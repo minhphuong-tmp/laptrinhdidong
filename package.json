@@ -23,7 +23,7 @@
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.1",
     "events": "^3.3.0",
-    "expo": "~53.0.9",
+    "expo": "^54.0.10",
     "expo-av": "~15.1.6",
     "expo-blur": "~14.1.4",
     "expo-constants": "~17.1.6",
