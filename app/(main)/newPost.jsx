@@ -134,7 +134,7 @@ const NewPost = () => {
                                     {user && user.name}
                                 </Text>
                                 <Text style={styles.publicText}>
-                                    PUBLIC
+                                    CÔNG KHAI
                                 </Text>
                             </View>
                         </View>
