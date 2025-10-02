@@ -178,6 +178,12 @@ const Home = () => {
                 <View style={styles.header}>
                     <Text style={styles.title}>LinkUp</Text>
                     <View style={styles.icons}>
+                        <Pressable onPress={() => router.push('todo')}>
+                            <Icon name="todo" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
+                        </Pressable>
+                        <Pressable onPress={() => router.push('stats')}>
+                            <Icon name="stats" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
+                        </Pressable>
                         <Pressable onPress={() => router.push('chat')}>
                             <Icon name="chat" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
                         </Pressable>

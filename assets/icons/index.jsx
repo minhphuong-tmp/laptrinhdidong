@@ -18,8 +18,10 @@ import Plus from './Plus';
 import Search from './Search';
 import Send from './Send';
 import Share from './Share';
+import Stats from './Stats';
 import ThreeDotsCircle from './ThreeDotsCircle';
 import ThreeDotsHorizontal from './ThreeDotsHorizontal';
+import Todo from './Todo';
 import User from './User';
 import Video from './Video';
 const icons = {
@@ -46,6 +48,8 @@ const icons = {
   logout: Logout,
   image: Image,
   video: Video,
+  stats: Stats,
+  todo: Todo,
 }
 
 const Icon = ({ name, ...props }) => {
