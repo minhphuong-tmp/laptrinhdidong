@@ -156,7 +156,7 @@ const Home = () => {
 
 
         }
-    }, [])
+    }, [user?.id])
 
 
 
@@ -184,7 +184,7 @@ const Home = () => {
                         <Pressable onPress={() => router.push('stats')}>
                             <Icon name="stats" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
                         </Pressable>
-                        <Pressable onPress={() => router.push('chat')}>
+                        <Pressable onPress={() => router.push('chatList')}>
                             <Icon name="chat" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
                         </Pressable>
                         <Pressable onPress={() => {

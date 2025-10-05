@@ -4,6 +4,8 @@ import Bio from './Bio';
 import Call from './Call';
 import Camera from './Camera';
 import Chat from './Chat';
+import Check from './Check';
+import Close from './Close';
 import Comment from './Comment';
 import Delete from './Delete';
 import Edit from './Edit';
@@ -27,6 +29,9 @@ import Video from './Video';
 const icons = {
   bio: Bio,
   chat: Chat,
+  check: Check,
+  close: Close,
+  delete: Delete,
   home: Home,
   mail: Mail,
   lock: Lock,
