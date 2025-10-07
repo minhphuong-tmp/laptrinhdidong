@@ -109,7 +109,7 @@ const NewChat = () => {
     };
 
     const filteredUsers = users.filter(user =>
-        user.name.toLowerCase().includes(searchText.toLowerCase())
+        user.name && user.name.toLowerCase().includes(searchText.toLowerCase())
     );
 
     const toggleUserSelection = (userId) => {
