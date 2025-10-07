@@ -47,7 +47,7 @@ export const getConversations = async (userId) => {
         // Lấy tin nhắn cuối và thông tin thành viên cho mỗi conversation
         const conversationsWithMessages = await Promise.all(
             data.map(async (item) => {
-                // Lấy tin nhắn cuối
+                // Lấy tin nhắn cuối để hiển thị preview
                 const { data: lastMessage } = await supabase
                     .from('messages')
                     .select(`
@@ -64,6 +64,17 @@ export const getConversations = async (userId) => {
                     .limit(1)
                     .single();
 
+                // Lấy TẤT CẢ tin nhắn để tính unread count chính xác
+                const { data: allMessages } = await supabase
+                    .from('messages')
+                    .select(`
+                        id,
+                        created_at,
+                        sender_id
+                    `)
+                    .eq('conversation_id', item.conversation_id)
+                    .order('created_at', { ascending: false });
+
                 // Lấy thông tin tất cả thành viên của conversation
                 const { data: members } = await supabase
                     .from('conversation_members')
@@ -78,7 +89,8 @@ export const getConversations = async (userId) => {
                 return {
                     ...item.conversation,
                     conversation_members: members || [],
-                    messages: lastMessage ? [lastMessage] : []
+                    messages: allMessages || [], // Trả về tất cả messages để tính unread count
+                    lastMessage: lastMessage // Tin nhắn cuối để hiển thị preview
                 };
             })
         );

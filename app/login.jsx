@@ -11,7 +11,6 @@ import { theme } from '../constants/theme'
 import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
-import { getUserData } from '../services/userService'
 
 
 
@@ -44,17 +43,8 @@ const Login = () => {
         if (error) {
             Alert.alert('Login', error.message);
         } else if (session) {
-            // Lấy thông tin user từ database
-            const userRes = await getUserData(session.user.id);
-            if (userRes.success) {
-                // Lưu user data từ database vào context
-                setAuth(userRes.data);
-            } else {
-                // Fallback: sử dụng session.user nếu không lấy được từ database
-                setAuth(session.user);
-            }
-            // Đăng nhập thành công, navigate đến home
-            router.replace('/(main)/home');
+            // AuthContext sẽ tự động handle navigation
+            console.log('Login successful, AuthContext will handle navigation');
         }
     }
 
@@ -101,7 +91,7 @@ const Login = () => {
                         <Text style={styles.footerText}>Không có tài khoản ?</Text>
                         <Pressable onPress={() => router.push('signUp')}>
                             <Text style={[styles.footerText, { color: theme.colors.primaryDark, fontWeight: theme.fonts.semiBold }]}>
-                                Đăng nhập
+                                Đăng ký
                             </Text>
                         </Pressable>
 

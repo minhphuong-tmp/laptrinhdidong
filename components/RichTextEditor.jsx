@@ -1,8 +1,9 @@
+import { forwardRef } from 'react';
 import WebRichTextEditor from './WebRichTextEditor';
 
-const RichTextEditor = ({ editorRef, onChange }) => {
+const RichTextEditor = forwardRef(({ onChange }, ref) => {
     // Tạm thời chỉ sử dụng WebRichTextEditor cho cả web và mobile
-    return <WebRichTextEditor editorRef={editorRef} onChange={onChange} />;
-};
+    return <WebRichTextEditor ref={ref} onChange={onChange} />;
+});
 
 export default RichTextEditor;

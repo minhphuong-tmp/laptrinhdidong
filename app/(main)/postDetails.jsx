@@ -40,9 +40,10 @@ const PostDetails = () => {
         }
     }
     useEffect(() => {
+        if (!postId) return;
 
         let commentChannel = supabase
-            .channel('comments')
+            .channel(`comments-${postId}`) // Unique channel name
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
@@ -55,11 +56,10 @@ const PostDetails = () => {
         getPostDetails();
 
         return () => {
-            commentChannel.unsubscribe(); // Đảm bảo unsubscribe trước
-            // supabase.removeChannel(commentChannel);
-
+            console.log('Cleaning up comment subscription');
+            commentChannel.unsubscribe();
         }
-    }, []);
+    }, [postId]);
 
 
 

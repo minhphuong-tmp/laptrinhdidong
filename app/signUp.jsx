@@ -8,12 +8,14 @@ import Button from '../components/Button'
 import Input from '../components/Input'
 import ScreenWrapper from '../components/ScreenWrapper'
 import { theme } from '../constants/theme'
+import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
 
 
 const SignUp = () => {
     const router = useRouter()
+    const { setAuth } = useAuth()
 
     const emailRef = useRef("");
     const nameRef = useRef("");
@@ -45,7 +47,10 @@ const SignUp = () => {
         setLoading(false);
 
         if (error) {
-            Alert.alert('Sign up', error.message);
+            Alert.alert('Đăng ký', error.message);
+        } else if (session) {
+            // AuthContext sẽ tự động handle navigation
+            Alert.alert('Thành công', 'Đăng ký thành công! Đang đăng nhập...');
         }
     };
 

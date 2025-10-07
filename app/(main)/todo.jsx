@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Alert,
     FlatList,
@@ -17,10 +17,13 @@ import ScreenWrapper from '../../components/ScreenWrapper';
 import TodoFilter from '../../components/TodoFilter';
 import TodoItem from '../../components/TodoItem';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
+import { supabase } from '../../lib/supabase';
 import { todoService } from '../../services/todoService';
 
 const Todo = () => {
+    const { user } = useAuth();
     const [todos, setTodos] = useState([]);
     const [filteredTodos, setFilteredTodos] = useState([]);
     const [selectedFilter, setSelectedFilter] = useState('all');
@@ -29,11 +32,76 @@ const Todo = () => {
     const [showAddForm, setShowAddForm] = useState(false);
     const [editTodo, setEditTodo] = useState(null);
     const [todoStats, setTodoStats] = useState({});
+    const subscriptionRef = useRef(null);
 
     // Load todos khi component mount
     useEffect(() => {
-        loadTodos();
-    }, []);
+        if (user?.id) {
+            loadTodos();
+        } else {
+            // Clear todos khi không có user
+            setTodos([]);
+            setFilteredTodos([]);
+        }
+    }, [user?.id]);
+
+    // Realtime subscription để cập nhật notes
+    useEffect(() => {
+        if (!user?.id) return;
+
+        // Cleanup existing subscription first
+        if (subscriptionRef.current) {
+            subscriptionRef.current.unsubscribe();
+            subscriptionRef.current = null;
+        }
+
+        console.log('Setting up notes realtime subscription for user:', user.id);
+
+        const channel = supabase
+            .channel(`notes-${user.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'notes',
+                filter: `user_id=eq.${user.id}`
+            }, (payload) => {
+                console.log('Notes realtime event:', payload);
+                console.log('Current user ID:', user?.id);
+                console.log('Payload user ID:', payload.new?.user_id);
+
+                // Chỉ xử lý events của user hiện tại
+                if (payload.new?.user_id !== user?.id) {
+                    console.log('Ignoring event from different user');
+                    return;
+                }
+
+                if (payload.eventType === 'INSERT') {
+                    // Thêm note mới
+                    setTodos(prev => [payload.new, ...prev]);
+                } else if (payload.eventType === 'UPDATE') {
+                    // Cập nhật note
+                    setTodos(prev => prev.map(note =>
+                        note.id === payload.new.id ? payload.new : note
+                    ));
+                } else if (payload.eventType === 'DELETE') {
+                    // Xóa note
+                    setTodos(prev => prev.filter(note => note.id !== payload.old.id));
+                }
+            })
+            .subscribe((status) => {
+                console.log('Notes channel status:', status);
+            });
+
+        subscriptionRef.current = channel;
+
+        return () => {
+            console.log('Unsubscribing from notes channel');
+            if (subscriptionRef.current) {
+                subscriptionRef.current.unsubscribe();
+                subscriptionRef.current = null;
+            }
+        };
+    }, [user?.id]);
 
     // Filter todos khi todos hoặc selectedFilter thay đổi
     useEffect(() => {
@@ -81,7 +149,7 @@ const Todo = () => {
         try {
             const result = await todoService.addTodo(todoData);
             if (result.success) {
-                setTodos(prev => [...prev, result.data]);
+                // Không cần optimistic update vì realtime sẽ handle
                 Alert.alert('Thành công', 'Đã thêm ghi chú mới');
             } else {
                 Alert.alert('Lỗi', result.msg || 'Không thể thêm ghi chú');
@@ -96,9 +164,7 @@ const Todo = () => {
         try {
             const result = await todoService.updateTodo(editTodo.id, todoData);
             if (result.success) {
-                setTodos(prev => prev.map(todo => 
-                    todo.id === editTodo.id ? result.data : todo
-                ));
+                // Không cần optimistic update vì realtime sẽ handle
                 setEditTodo(null);
                 Alert.alert('Thành công', 'Đã cập nhật ghi chú');
             } else {
@@ -114,9 +180,8 @@ const Todo = () => {
         try {
             const result = await todoService.toggleTodo(todoId);
             if (result.success) {
-                setTodos(prev => prev.map(todo => 
-                    todo.id === todoId ? result.data : todo
-                ));
+                // Không cần optimistic update vì realtime sẽ handle
+                // Chỉ hiển thị thông báo nếu cần
             } else {
                 Alert.alert('Lỗi', result.msg || 'Không thể cập nhật trạng thái');
             }
@@ -130,7 +195,7 @@ const Todo = () => {
         try {
             const result = await todoService.deleteTodo(todoId);
             if (result.success) {
-                setTodos(prev => prev.filter(todo => todo.id !== todoId));
+                // Không cần optimistic update vì realtime sẽ handle
                 Alert.alert('Thành công', 'Đã xóa ghi chú');
             } else {
                 Alert.alert('Lỗi', result.msg || 'Không thể xóa ghi chú');
@@ -184,8 +249,8 @@ const Todo = () => {
                 {selectedFilter === 'all' ? 'Chưa có ghi chú nào' : 'Không có ghi chú phù hợp'}
             </Text>
             <Text style={styles.emptySubtitle}>
-                {selectedFilter === 'all' 
-                    ? 'Hãy thêm ghi chú đầu tiên của bạn!' 
+                {selectedFilter === 'all'
+                    ? 'Hãy thêm ghi chú đầu tiên của bạn!'
                     : 'Thử thay đổi bộ lọc để xem ghi chú khác'
                 }
             </Text>
@@ -211,19 +276,19 @@ const Todo = () => {
             <View style={styles.container}>
                 <Header title="Ghi chú" />
 
-                <ScrollView 
+                <ScrollView
                     style={styles.content}
                     showsVerticalScrollIndicator={false}
                     refreshControl={
-                        <RefreshControl 
-                            refreshing={refreshing} 
+                        <RefreshControl
+                            refreshing={refreshing}
                             onRefresh={onRefresh}
                             colors={[theme.colors.primary]}
                         />
                     }
                 >
                     {/* Filter Component */}
-                    <TodoFilter 
+                    <TodoFilter
                         selectedFilter={selectedFilter}
                         onFilterChange={handleFilterChange}
                         todoStats={todoStats}
@@ -270,7 +335,7 @@ const styles = StyleSheet.create({
         flex: 1,
         paddingHorizontal: wp(4),
     },
-    
+
     content: {
         flex: 1,
         paddingBottom: hp(2),

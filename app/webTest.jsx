@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 const WebTest = () => {
     return (
         <View style={styles.container}>
-            <Text style={styles.title}>🚀 Web App Test</Text>
+            <Text style={styles.title}>🚀 Kiểm tra Web App</Text>
             <Text style={styles.subtitle}>React Native Web đã hoạt động!</Text>
             <View style={styles.card}>
                 <Text style={styles.cardTitle}>✅ Tính năng đã hoàn thành:</Text>

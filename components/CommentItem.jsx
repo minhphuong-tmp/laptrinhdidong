@@ -18,11 +18,11 @@ const CommentItem = ({
             'Bạn có chắc muốn xoá bình luận này ?',
             [
                 {
-                    text: 'Cancel',
+                    text: 'Huỷ',
                     style: 'cancel',
                 },
                 {
-                    text: 'Delete',
+                    text: 'Xoá',
                     onPress: () => onDelete(item),
                     style: 'destructive',
                 },
