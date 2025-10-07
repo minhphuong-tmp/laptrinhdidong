@@ -20,16 +20,21 @@ const Profile = () => {
     const [posts, setPosts] = useState([]);
 
     const onLogout = async () => {
-        setAuth(null);
-        const { error } = await supabase.auth.signOut();
-        if (error) {
-            Alert.alert('Logout', 'Error logging out. Please try again.');
+        try {
+            const { error } = await supabase.auth.signOut();
+            if (error) {
+                Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+            }
+            // Không cần setAuth(null) vì AuthContext sẽ tự động handle
+        } catch (error) {
+            console.log('Logout error:', error);
+            Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
         }
     }
 
     const getPosts = async () => {
         limit = limit + 4;
-        if (!hasMore) return null;
+        if (!hasMore || !user?.id) return null;
         let res = await fetchPost(limit, user.id);
         if (res.success) {
             if (posts.length === res.data.length) setHasMore(false);
@@ -45,12 +50,12 @@ const Profile = () => {
             'Bạn có chắc muốn đăng xuất ?',
             [
                 {
-                    text: 'Cancel',
+                    text: 'Hủy',
                     onPress: () => console.log('modal cancelled'),
                     style: 'cancel',
                 },
                 {
-                    text: 'Logout',
+                    text: 'Đăng xuất',
                     onPress: () => onLogout(),
                     style: 'destructive',
                 }
@@ -63,20 +68,22 @@ const Profile = () => {
         <ScreenWrapper bg="white" >
             <FlatList
                 data={posts}
-                ListHeaderComponent={<UserHeader user={user} router={router} handleLogout={handleLogout} />}
+                ListHeaderComponent={user ? <UserHeader user={user} router={router} handleLogout={handleLogout} /> : null}
                 ListHeaderComponentStyle={{ marginBottom: 30 }}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.listStyle}
                 keyExtractor={(item) => item.id.toString()}
                 renderItem={({ item }) => {
+                    if (!user) return null;
                     return <PostCard
                         item={item}
                         currentUser={user}
                         router={router} />
                 }}
                 onEndReached={() => {
-                    getPosts();
-
+                    if (user?.id) {
+                        getPosts();
+                    }
                 }}
                 onEndReachedThreshold={0.3}
                 ListFooterComponent={hasMore ? (

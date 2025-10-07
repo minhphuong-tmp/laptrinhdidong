@@ -1,20 +1,47 @@
+import { forwardRef, useImperativeHandle, useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { theme } from '../constants/theme';
 
 // Web-compatible RichTextEditor
-const WebRichTextEditor = ({ editorRef, onChange }) => {
+const WebRichTextEditor = forwardRef(({ onChange }, ref) => {
+    const [content, setContent] = useState('');
+
+    useImperativeHandle(ref, () => ({
+        // Method for mobile compatibility
+        setContentHTML: (html) => {
+            setContent(html);
+        },
+        // Method for web compatibility  
+        setValue: (value) => {
+            setContent(value);
+        },
+        // Method for mobile compatibility
+        blurContentEditor: () => {
+            // TextInput will be blurred automatically when losing focus
+        },
+        // Method for web compatibility
+        blur: () => {
+            // TextInput will be blurred automatically when losing focus
+        }
+    }));
+
+    const handleChangeText = (text) => {
+        setContent(text);
+        onChange?.(text);
+    };
+
     return (
         <View style={{ minHeight: 285 }}>
             <TextInput
-                ref={editorRef}
                 style={styles.webTextInput}
                 placeholder="Bạn đang nghĩ gì"
                 multiline
-                onChangeText={onChange}
+                value={content}
+                onChangeText={handleChangeText}
             />
         </View>
     );
-};
+});
 
 export default WebRichTextEditor;
 

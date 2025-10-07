@@ -30,7 +30,12 @@ const NewPost = () => {
             bodyRef.current = post.body;
             setFile(post.file || null);
             setTimeout(() => {
-                editorRef.current?.setContentHTML(post.body);
+                // Check if editorRef has setContentHTML method (mobile) or setValue method (web)
+                if (editorRef.current?.setContentHTML) {
+                    editorRef.current.setContentHTML(post.body);
+                } else if (editorRef.current?.setValue) {
+                    editorRef.current.setValue(post.body);
+                }
             }, 800)
         }
     }, []);
@@ -79,7 +84,12 @@ const NewPost = () => {
         if (res.success) {
             setFile(null);
             bodyRef.current = '';
-            editorRef.current?.setContentHTML('');
+            // Check if editorRef has setContentHTML method (mobile) or setValue method (web)
+            if (editorRef.current?.setContentHTML) {
+                editorRef.current.setContentHTML('');
+            } else if (editorRef.current?.setValue) {
+                editorRef.current.setValue('');
+            }
             router.back();
         } else {
             Alert.alert('Post', res.msg);
@@ -113,7 +123,12 @@ const NewPost = () => {
         return 'video';
     };
     const dismissKeyboard = () => {
-        editorRef.current?.blurContentEditor();
+        // Check if editorRef has blurContentEditor method (mobile) or blur method (web)
+        if (editorRef.current?.blurContentEditor) {
+            editorRef.current.blurContentEditor();
+        } else if (editorRef.current?.blur) {
+            editorRef.current.blur();
+        }
     };
     return (
         <ScreenWrapper bg="white">
@@ -140,7 +155,7 @@ const NewPost = () => {
                         </View>
 
                         <View style={styles.textEditor}>
-                            <RichTextEditor editorRef={editorRef} onChange={body => bodyRef.current = body}>
+                            <RichTextEditor ref={editorRef} onChange={body => bodyRef.current = body}>
                             </RichTextEditor>
                         </View>
 

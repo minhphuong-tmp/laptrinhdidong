@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
@@ -20,11 +20,17 @@ const Home = () => {
     // console.log('user', user);
     const router = useRouter();
     const [hasMore, setHasMore] = useState(true);
+    const subscriptionsRef = useRef({}); // Track subscriptions
     const onLogout = async () => {
-        setAuth(null);
-        const { error } = await supabase.auth.signOut();
-        if (error) {
-            Alert.alert('Logout', 'Error logging out. Please try again.');
+        try {
+            const { error } = await supabase.auth.signOut();
+            if (error) {
+                Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+            }
+            // Không cần setAuth(null) vì AuthContext sẽ tự động handle
+        } catch (error) {
+            console.log('Logout error:', error);
+            Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
         }
     }
     const [notificationCount, setNotificationCount] = useState(0);
@@ -102,9 +108,20 @@ const Home = () => {
     };
 
     useEffect(() => {
+        if (!user?.id) return; // Chỉ setup khi có user
 
-        let postChannel = supabase
-            .channel('posts')
+        // Cleanup existing subscriptions first
+        Object.values(subscriptionsRef.current).forEach(channel => {
+            if (channel && typeof channel.unsubscribe === 'function') {
+                channel.unsubscribe();
+            }
+        });
+        subscriptionsRef.current = {};
+
+        console.log('Setting up home subscriptions for user:', user.id);
+
+        const postChannel = supabase
+            .channel(`posts-${user.id}`)
             .on('postgres_changes', {
                 event: '*',
                 schema: 'public',
@@ -116,8 +133,8 @@ const Home = () => {
                 console.log('postChannel status:', status)
             })
 
-        let notificationChannel = supabase
-            .channel('notifications')
+        const notificationChannel = supabase
+            .channel(`notifications-${user.id}`)
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
@@ -131,9 +148,8 @@ const Home = () => {
                 console.log('notificationChanel status:', status)
             })
 
-
-        let commentChannel = supabase
-            .channel('comments123')
+        const commentChannel = supabase
+            .channel(`comments-${user.id}`)
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
@@ -143,18 +159,24 @@ const Home = () => {
                 handleNewComment(payload)
             })
             .subscribe((status) => {
-                console.log('commentChannel123 status:', status)
+                console.log('commentChannel status:', status)
             })
 
+        // Store channels in ref
+        subscriptionsRef.current = {
+            postChannel,
+            notificationChannel,
+            commentChannel
+        };
+
         return () => {
-            postChannel.unsubscribe(); // Đảm bảo unsubscribe trước
-            notificationChannel.unsubscribe();
-            commentChannel.unsubscribe();
-            // supabase.removeChannel(commentChannel)
-            // supabase.removeChannel(postChannel)
-            // supabase.removeChannel(notificationChannel)
-
-
+            console.log('Cleaning up home subscriptions for user:', user.id);
+            Object.values(subscriptionsRef.current).forEach(channel => {
+                if (channel && typeof channel.unsubscribe === 'function') {
+                    channel.unsubscribe();
+                }
+            });
+            subscriptionsRef.current = {};
         }
     }, [user?.id])
 

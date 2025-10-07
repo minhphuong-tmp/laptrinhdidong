@@ -118,12 +118,12 @@ const PostCard = ({
     const handlePostDelete = () => {
         Alert.alert('Confirm', 'Are you sure you want to do this?', [
             {
-                text: 'Cancel',
+                text: 'Huỷ',
                 onPress: () => console.log('modal cancelled'),
                 style: 'cancel'
             },
             {
-                text: 'Delete',
+                text: 'Xoá',
                 onPress: () => onDelete(item),
                 style: 'destructive'
             }

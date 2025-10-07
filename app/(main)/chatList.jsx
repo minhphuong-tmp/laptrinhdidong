@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import moment from 'moment';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import Icon from '../../assets/icons';
 import Avatar from '../../components/Avatar';
@@ -18,6 +18,7 @@ const ChatList = () => {
     const router = useRouter();
     const [conversations, setConversations] = useState([]);
     const [loading, setLoading] = useState(true);
+    const subscriptionRef = useRef(null);
 
     useEffect(() => {
         loadConversations();
@@ -27,10 +28,16 @@ const ChatList = () => {
     useEffect(() => {
         if (!user?.id) return;
 
+        // Cleanup existing subscription first
+        if (subscriptionRef.current) {
+            subscriptionRef.current.unsubscribe();
+            subscriptionRef.current = null;
+        }
+
         console.log('Setting up chat list realtime subscription');
 
         const channel = supabase
-            .channel('chat-list-updates')
+            .channel(`chat-list-updates-${user.id}`) // Unique channel name
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
@@ -44,9 +51,14 @@ const ChatList = () => {
                 console.log('Chat list channel status:', status);
             });
 
+        subscriptionRef.current = channel;
+
         return () => {
             console.log('Unsubscribing from chat list channel');
-            channel.unsubscribe();
+            if (subscriptionRef.current) {
+                subscriptionRef.current.unsubscribe();
+                subscriptionRef.current = null;
+            }
         };
     }, [user?.id]);
 
@@ -112,6 +124,10 @@ const ChatList = () => {
     };
 
     const getLastMessage = (conversation) => {
+        // Sử dụng lastMessage nếu có, fallback về messages[0]
+        if (conversation.lastMessage) {
+            return conversation.lastMessage;
+        }
         if (!conversation.messages || conversation.messages.length === 0) {
             return { content: 'Chưa có tin nhắn', type: 'text' };
         }
@@ -149,9 +165,19 @@ const ChatList = () => {
         if (!member || !conversation.messages) return 0;
 
         const lastReadAt = new Date(member.last_read_at);
-        return conversation.messages.filter(msg =>
+        const unreadMessages = conversation.messages.filter(msg =>
             new Date(msg.created_at) > lastReadAt && msg.sender_id !== user.id
-        ).length;
+        );
+
+        console.log('=== UNREAD COUNT DEBUG ===');
+        console.log('Conversation ID:', conversation.id);
+        console.log('Member last_read_at:', member.last_read_at);
+        console.log('LastReadAt Date:', lastReadAt);
+        console.log('Total messages:', conversation.messages.length);
+        console.log('Unread messages count:', unreadMessages.length);
+        console.log('Unread messages:', unreadMessages.map(m => ({ id: m.id, created_at: m.created_at, sender_id: m.sender_id })));
+
+        return unreadMessages.length;
     };
 
     const formatTime = (timestamp) => {
@@ -223,16 +249,18 @@ const ChatList = () => {
                     </View>
                 </View>
 
-                {/* Nút xóa */}
-                <Pressable
-                    style={styles.deleteButton}
-                    onPress={(e) => {
-                        e.stopPropagation(); // Ngăn không cho trigger onPress của conversationItem
-                        deleteConversationHandler(conversation);
-                    }}
-                >
-                    <Icon name="delete" size={hp(2.5)} color={theme.colors.error || '#ff4444'} />
-                </Pressable>
+                {/* Nút xóa - chỉ hiện khi không có tin nhắn unread */}
+                {unreadCount === 0 && (
+                    <Pressable
+                        style={styles.deleteButton}
+                        onPress={(e) => {
+                            e.stopPropagation(); // Ngăn không cho trigger onPress của conversationItem
+                            deleteConversationHandler(conversation);
+                        }}
+                    >
+                        <Icon name="delete" size={hp(2.5)} color={theme.colors.error || '#ff4444'} />
+                    </Pressable>
+                )}
             </Pressable>
         );
     };
@@ -385,6 +413,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
         paddingHorizontal: wp(1),
+        marginTop: hp(-4), // Chỉnh cao hơn 1 chút
     },
     unreadCount: {
         color: 'white',
