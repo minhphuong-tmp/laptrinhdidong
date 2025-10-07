@@ -1,0 +1,7 @@
+---
+description: Tham khảo code của moblie app để thực hiện các chức năng tương tự nếu có. Không được sửa code ảnh hưởng đến moblie app 
+Luôn hỏi hướng làm trước khi thực hiện
+
+globs:
+alwaysApply: true
+---

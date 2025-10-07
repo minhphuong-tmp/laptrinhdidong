@@ -8,13 +8,16 @@ import Button from '../components/Button'
 import Input from '../components/Input'
 import ScreenWrapper from '../components/ScreenWrapper'
 import { theme } from '../constants/theme'
+import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
+import { getUserData } from '../services/userService'
 
 
 
 const Login = () => {
     const router = useRouter()
+    const { setAuth } = useAuth()
 
     const emailRef = useRef("");
     const passwordRef = useRef("");
@@ -36,11 +39,22 @@ const Login = () => {
             password,
         });
 
-
         setLoading(false);
 
         if (error) {
             Alert.alert('Login', error.message);
+        } else if (session) {
+            // Lấy thông tin user từ database
+            const userRes = await getUserData(session.user.id);
+            if (userRes.success) {
+                // Lưu user data từ database vào context
+                setAuth(userRes.data);
+            } else {
+                // Fallback: sử dụng session.user nếu không lấy được từ database
+                setAuth(session.user);
+            }
+            // Đăng nhập thành công, navigate đến home
+            router.replace('/(main)/home');
         }
     }
 
