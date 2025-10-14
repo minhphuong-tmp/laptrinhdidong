@@ -40,7 +40,7 @@ export const fetchPost = async (limit, userId) => {
                 .select(`
                 *,
                 user:users(id,name,image),
-                postLikes(*),
+                postLikes(*, user:users(id,name,image)),
                 comments (count)
 
 
@@ -61,7 +61,7 @@ export const fetchPost = async (limit, userId) => {
                 .select(`
                 *,
                 user:users(id,name,image),
-                postLikes(*),
+                postLikes(*, user:users(id,name,image)),
                 comments (count)
 
 
@@ -93,7 +93,7 @@ export const fetchPostDetails = async (postId) => {
             .select(`
                 *,
                 user:users(id,name,image),
-                postLikes(*),
+                postLikes(*, user:users(id,name,image)),
                 comments(*, user:users(id,name,image))
 
                 `)

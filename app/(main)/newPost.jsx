@@ -4,11 +4,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native'
 import Icon from '../../assets/icons'
-import Avatar from '../../components/Avatar'
 import Button from '../../components/Button'
 import Header from '../../components/Header'
 import RichTextEditor from '../../components/RichTextEditor'
 import ScreenWrapper from '../../components/ScreenWrapper'
+import UserAvatar from '../../components/UserAvatar'
 import { theme } from '../../constants/theme'
 import { useAuth } from '../../context/AuthContext'
 import { hp, wp } from '../../helpers/common'
@@ -139,14 +139,14 @@ const NewPost = () => {
                     <ScrollView contentContainerStyle={{ gap: 20 }}  >
                         {/* avatar */}
                         <View style={styles.header}>
-                            <Avatar
-                                uri={user?.image}
+                            <UserAvatar
+                                user={user}
                                 size={hp(6.5)}
                                 rounded={theme.radius.xl}
                             />
                             <View style={{ gap: 2 }}>
                                 <Text style={styles.username}>
-                                    {user && user.name}
+                                    {user?.user_metadata?.name || user?.name || 'User'}
                                 </Text>
                                 <Text style={styles.publicText}>
                                     CÔNG KHAI

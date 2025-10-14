@@ -5,9 +5,13 @@ import { supabaseUrl } from '../constants';
 import { supabase } from '../lib/supabase';
 
 export const getUserImageSrc = (imagePath) => {
+    console.log('getUserImageSrc - imagePath:', imagePath);
     if (imagePath) {
-        return getSupabaseFileUrl(imagePath);
+        const url = getSupabaseFileUrl(imagePath);
+        console.log('getUserImageSrc - generated URL:', url);
+        return url;
     } else {
+        console.log('getUserImageSrc - using default image');
         return require('../assets/images/defaultUser.png');
     }
 };

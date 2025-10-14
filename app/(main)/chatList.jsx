@@ -211,7 +211,7 @@ const ChatList = () => {
                     <Avatar
                         uri={getConversationAvatar(conversation)}
                         size={hp(6)}
-                        rounded={theme.radius.xl}
+                        rounded={true}
                     />
                 )}
 
@@ -276,23 +276,38 @@ const ChatList = () => {
     }
 
     return (
-        <ScreenWrapper bg="white">
+        <ScreenWrapper bg={theme.colors.background}>
             <View style={styles.container}>
-                {/* Header */}
+                {/* Messenger Header */}
                 <View style={styles.header}>
-                    <Pressable
-                        style={styles.backButton}
-                        onPress={() => router.back()}
-                    >
-                        <Icon name="arrowLeft" size={hp(2.5)} color={theme.colors.text} />
-                    </Pressable>
-                    <Text style={styles.title}>Tin nhắn</Text>
-                    <Pressable
-                        style={styles.newChatButton}
-                        onPress={() => router.push('newChat')}
-                    >
-                        <Icon name="plus" size={hp(3)} color={theme.colors.primary} />
-                    </Pressable>
+                    <View style={styles.headerLeft}>
+                        <Pressable
+                            style={styles.backButton}
+                            onPress={() => router.back()}
+                        >
+                            <Icon name="arrowLeft" size={hp(2.5)} color={theme.colors.text} />
+                        </Pressable>
+                        <Text style={styles.title}>Chats</Text>
+                    </View>
+                    <View style={styles.headerRight}>
+                        <Pressable style={styles.headerIcon}>
+                            <Icon name="video" size={hp(2.5)} color={theme.colors.text} />
+                        </Pressable>
+                        <Pressable
+                            style={styles.newChatButton}
+                            onPress={() => router.push('newChat')}
+                        >
+                            <Icon name="plus" size={hp(2.5)} color={theme.colors.text} />
+                        </Pressable>
+                    </View>
+                </View>
+
+                {/* Search Bar */}
+                <View style={styles.searchContainer}>
+                    <View style={styles.searchBar}>
+                        <Icon name="search" size={hp(2)} color={theme.colors.textSecondary} />
+                        <Text style={styles.searchPlaceholder}>Tìm kiếm</Text>
+                    </View>
                 </View>
 
                 {/* Conversations List */}
@@ -335,27 +350,62 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
+    // Messenger Header
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingVertical: hp(2),
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
         borderBottomWidth: 1,
-        borderBottomColor: theme.colors.gray,
+        borderBottomColor: theme.colors.border,
+        ...theme.shadows.small,
+    },
+    headerLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+    headerRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: wp(3),
     },
     backButton: {
-        padding: hp(0.5),
-        borderRadius: theme.radius.lg,
+        padding: wp(2),
+        marginRight: wp(2),
     },
     title: {
-        fontSize: hp(2.5),
+        fontSize: hp(2.2),
         fontWeight: theme.fonts.bold,
         color: theme.colors.text,
     },
+    headerIcon: {
+        padding: wp(2),
+    },
     newChatButton: {
-        padding: hp(1),
-        borderRadius: theme.radius.lg,
-        backgroundColor: theme.colors.primaryLight,
+        padding: wp(2),
+    },
+
+    // Search Bar
+    searchContainer: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+        backgroundColor: theme.colors.background,
+    },
+    searchBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.full,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+    },
+    searchPlaceholder: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+        marginLeft: wp(2),
     },
     listContainer: {
         paddingVertical: hp(1),
@@ -364,9 +414,10 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         paddingVertical: hp(1.5),
-        paddingHorizontal: wp(2),
-        borderBottomWidth: 0.5,
-        borderBottomColor: theme.colors.gray,
+        paddingHorizontal: wp(4),
+        backgroundColor: theme.colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
         position: 'relative',
     },
     conversationContent: {

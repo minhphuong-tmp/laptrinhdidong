@@ -1,6 +1,17 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Button, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+    FlatList,
+    Modal,
+    Pressable,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    View
+} from 'react-native';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
@@ -8,18 +19,26 @@ import { supabase } from '../../lib/supabase';
 import { fetchPost } from '../../services/postService';
 
 import Icon from '../../assets/icons';
-import Avatar from '../../components/Avatar';
 import Loading from '../../components/Loading';
 import PostCard from '../../components/PostCard';
-import ScreenWrapper from '../../components/ScreenWrapper';
+import UserAvatar from '../../components/UserAvatar';
 import { getUserData } from '../../services/userService';
 var limit = 0;
 const Home = () => {
     const { user, setAuth } = useAuth();
-    // const user = '123';
-    // console.log('user', user);
     const router = useRouter();
+
+    // Lấy tên từ user_metadata
+    const userName = user?.user_metadata?.name || user?.name || 'Unknown User';
+
+    // States
     const [hasMore, setHasMore] = useState(true);
+    const [notificationCount, setNotificationCount] = useState(0);
+    const [posts, setPosts] = useState([]);
+    const [comment, setComment] = useState(0);
+    const [showMenu, setShowMenu] = useState(false);
+    const [showCreatePost, setShowCreatePost] = useState(false);
+    const [postContent, setPostContent] = useState('');
     const subscriptionsRef = useRef({}); // Track subscriptions
     const onLogout = async () => {
         try {
@@ -33,9 +52,12 @@ const Home = () => {
             Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
         }
     }
-    const [notificationCount, setNotificationCount] = useState(0);
-    const [posts, setPosts] = useState([]);
-    const [comment, setComment] = useState(0);
+
+    const handleCreatePost = async () => {
+        // Chỉ chuyển hướng sang trang tạo bài viết
+        router.push('newPost');
+    };
+
     const handlePostEvent = async (payload) => {
         console.log('got new post', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
@@ -57,8 +79,8 @@ const Home = () => {
                 let updatedPosts = prevPosts.map(post => {
                     if (post.id === payload.new.id) {
                         post.body = payload.new.body;
-                        post.file = payload.new.file
-                    };
+                        post.file = payload.new.file;
+                    }
                     return post;
                 });
                 return updatedPosts;
@@ -180,7 +202,12 @@ const Home = () => {
         }
     }, [user?.id])
 
-
+    // Load posts when component mounts
+    useEffect(() => {
+        if (user?.id) {
+            getPosts();
+        }
+    }, [user?.id]);
 
     const getPosts = async () => {
         limit = limit + 4;
@@ -194,56 +221,72 @@ const Home = () => {
 
 
     return (
-        <ScreenWrapper bg="white">
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.backgroundSecondary }}>
             <View style={styles.container}>
-                {/* header */}
+                {/* Facebook Header */}
                 <View style={styles.header}>
-                    <Text style={styles.title}>LinkUp</Text>
-                    <View style={styles.icons}>
-                        <Pressable onPress={() => router.push('todo')}>
-                            <Icon name="todo" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
-                        </Pressable>
-                        <Pressable onPress={() => router.push('stats')}>
-                            <Icon name="stats" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
-                        </Pressable>
-                        <Pressable onPress={() => router.push('chatList')}>
-                            <Icon name="chat" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
-                        </Pressable>
-                        <Pressable onPress={() => {
-                            setNotificationCount(0);
-                            router.push('notifications')
-                        }
-                        }>
-                            <Icon name="heart" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
-                            {
-                                notificationCount > 0 && (
-                                    <View style={styles.pill}>
-                                        <Text style={styles.pillText}>{notificationCount}</Text>
-                                    </View>
-                                )
-                            }
-                        </Pressable>
-                        <Pressable onPress={() => router.push('newPost')}>
-                            <Icon name="plus" size={hp(3.2)} strokeWidth={2} color={theme.colors.text} />
-                        </Pressable>
-                        <Pressable onPress={() => router.push('profile')}>
-                            <Avatar
-                                uri={user?.image}
-                                size={hp(4.3)}
-                                rounded={theme.radius.sm}
-                                style={{ borderWidth: 2 }}
+                    <View style={styles.headerLeft}>
+                        <Text style={styles.logo}>facebook</Text>
+                    </View>
+                    <View style={styles.headerRight}>
+                        <TouchableOpacity
+                            style={styles.headerIcon}
+                            onPress={() => {
+                                setNotificationCount(0);
+                                router.push('notifications');
+                            }}
+                        >
+                            <Icon name="zap" size={hp(2.8)} color={theme.colors.text} />
+                            {notificationCount > 0 && (
+                                <View style={styles.notificationBadge}>
+                                    <Text style={styles.notificationText}>{notificationCount}</Text>
+                                </View>
+                            )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.headerIcon}
+                            onPress={() => router.push('chatList')}
+                        >
+                            <Icon name="chat" size={hp(2.8)} color={theme.colors.text} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => router.push('profile')}>
+                            <UserAvatar
+                                user={user}
+                                size={hp(3.5)}
+                                rounded={theme.radius.full}
                             />
-                        </Pressable>
-
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.menuButton}
+                            onPress={() => setShowMenu(true)}
+                        >
+                            <Text style={styles.menuText}>☰</Text>
+                        </TouchableOpacity>
                     </View>
                 </View>
 
 
+                {/* Posts Feed */}
                 <FlatList
                     data={posts}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.listStyle}
                     keyExtractor={(item) => item.id.toString()}
+                    ListHeaderComponent={() => (
+                        <View style={styles.createPostContainer}>
+                            <View style={styles.createPostBox}>
+                                <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
+                                <View style={styles.createPostInputArea}>
+                                    <TouchableOpacity
+                                        style={styles.createPostPlaceholder}
+                                        onPress={handleCreatePost}
+                                    >
+                                        <Text style={styles.createPostPlaceholderText}>Bạn đang nghĩ gì?</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        </View>
+                    )}
                     renderItem={({ item }) => {
                         return <PostCard
                             item={item}
@@ -252,15 +295,12 @@ const Home = () => {
                     }}
                     onEndReached={() => {
                         getPosts();
-
                     }}
                     onEndReachedThreshold={0.3}
                     ListFooterComponent={hasMore ? (
-
                         <View style={{ marginVertical: posts.length == 0 ? 200 : 30 }}>
                             <Loading />
                         </View>
-
                     ) : (
                         <View style={{ marginVertical: 30 }}>
                             <Text style={styles.noPosts}>Không còn bài đăng</Text>
@@ -269,82 +309,868 @@ const Home = () => {
                 />
             </View>
 
-            <Button title="Đăng xuất" onPress={onLogout} />
-        </ScreenWrapper>
+            {/* Menu Drawer */}
+            <Modal
+                visible={showMenu}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowMenu(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
+                    <SafeAreaView style={styles.menuOverlay}>
+                        <View style={styles.menuBackdrop} />
+                        <TouchableWithoutFeedback onPress={() => { }}>
+                            <View style={styles.menuContainer}>
+                                {/* Menu Header */}
+                                <View style={styles.menuHeader}>
+                                    <View style={styles.menuUserInfo}>
+                                        <UserAvatar
+                                            user={user}
+                                            size={hp(5)}
+                                            rounded={theme.radius.full}
+                                        />
+                                        <View style={styles.menuUserDetails}>
+                                            <Text style={styles.menuUserName}>{user?.name || 'User'}</Text>
+                                            <Text style={styles.menuUserEmail}>{user?.email || 'user@example.com'}</Text>
+                                        </View>
+                                    </View>
+                                </View>
 
-        // <Text>Home</Text>
+                                {/* Menu Items */}
+                                <View style={styles.menuItems}>
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('profile');
+                                        }}
+                                    >
+                                        <Icon name="user" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Trang cá nhân</Text>
+                                    </TouchableOpacity>
 
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('todo');
+                                        }}
+                                    >
+                                        <Icon name="todo" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Ghi chú</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('stats');
+                                        }}
+                                    >
+                                        <Icon name="stats" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Thống kê</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('chatList');
+                                        }}
+                                    >
+                                        <Icon name="chat" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Tin nhắn</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('newChat');
+                                        }}
+                                    >
+                                        <Icon name="messageCircle" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Tạo cuộc trò chuyện</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                {/* Footer */}
+                                <View style={styles.menuFooter}>
+                                    <TouchableOpacity
+                                        style={[styles.menuItem, styles.logoutItem]}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            onLogout();
+                                        }}
+                                    >
+                                        <Icon name="logOut" size={hp(2.5)} color={theme.colors.error} />
+                                        <Text style={[styles.menuItemText, styles.logoutText]}>Đăng xuất</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </SafeAreaView>
+                </TouchableWithoutFeedback>
+            </Modal>
+
+            {/* Create Post Modal */}
+            <Modal
+                visible={showCreatePost}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowCreatePost(false)}
+            >
+                <View style={styles.createPostOverlay}>
+                    <Pressable
+                        style={styles.createPostBackdrop}
+                        onPress={() => setShowCreatePost(false)}
+                    />
+                    <View style={styles.createPostModal}>
+                        {/* Modal Header */}
+                        <View style={styles.createPostHeader}>
+                            <TouchableOpacity
+                                style={styles.createPostCancel}
+                                onPress={() => setShowCreatePost(false)}
+                            >
+                                <Text style={styles.createPostCancelText}>Hủy</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.createPostTitle}>Tạo bài viết</Text>
+                            <TouchableOpacity
+                                style={styles.createPostShare}
+                                onPress={handleCreatePost}
+                            >
+                                <Text style={styles.createPostShareText}>Đăng</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        {/* Modal Content */}
+                        <View style={styles.createPostContent}>
+                            <View style={styles.createPostUser}>
+                                <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
+                                <Text style={styles.createPostUserName}>{user?.name || 'User'}</Text>
+                            </View>
+
+                            <TextInput
+                                style={styles.createPostTextInput}
+                                value={postContent}
+                                onChangeText={setPostContent}
+                                placeholder="Bạn đang nghĩ gì?"
+                                placeholderTextColor={theme.colors.textSecondary}
+                                multiline
+                                textAlignVertical="top"
+                            />
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+        </SafeAreaView>
     )
 }
 
 export default Home
 
 const styles = StyleSheet.create({
-
     container: {
         flex: 1,
-        // paddingHorizontal: wp(4),
+        backgroundColor: theme.colors.backgroundSecondary,
     },
 
+    // Header Styles
     header: {
         flexDirection: 'row',
-        alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 10,
-        marginHorizontal: wp(4),
-    },
-
-    title: {
-        color: theme.colors.text,
-        fontSize: hp(3.2),
-        fontWeight: theme.fonts.bold,
-    },
-
-    avatarImage: {
-        height: hp(4.3),
-        width: hp(4.3),
-        borderRadius: theme.radius.sm,
-        borderCurve: 'continuous',
-        borderColor: theme.colors.gray,
-        borderWidth: 3,
-    },
-
-    icons: {
-        flexDirection: 'row',
-        justifyContent: 'center',
         alignItems: 'center',
-        gap: 18,
-    },
-
-
-    listStyle: {
-        paddingTop: 20,
         paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+        ...theme.shadows.small,
     },
 
-    noPosts: {
-        fontSize: hp(2),
-        textAlign: 'center',
-        color: theme.colors.text,
+    headerLeft: {
+        flex: 1,
     },
 
-    pill: {
-        position: 'absolute',
-        right: -10,
-        top: -4,
-        height: hp(2.2),
-        width: hp(2.2),
+    logo: {
+        fontSize: hp(2.8),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.primary,
+    },
+
+    headerRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: wp(3),
+    },
+
+    headerIcon: {
+        padding: wp(2),
+        position: 'relative',
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+        marginHorizontal: wp(1),
         justifyContent: 'center',
         alignItems: 'center',
-        borderRadius: 20,
-        backgroundColor: theme.colors.roseLight,
     },
 
-    pillText: {
+    notificationBadge: {
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        backgroundColor: theme.colors.error,
+        borderRadius: theme.radius.full,
+        minWidth: hp(2),
+        height: hp(2),
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: wp(1),
+    },
+
+    notificationText: {
         color: 'white',
         fontSize: hp(1.2),
         fontWeight: theme.fonts.bold,
     },
 
+    bellText: {
+        fontSize: hp(2.5),
+        color: theme.colors.text,
+    },
 
+    bellEmoji: {
+        fontSize: hp(2.8),
+        color: theme.colors.text,
+    },
+
+    bellIcon: {
+        width: hp(2.8),
+        height: hp(2.8),
+        position: 'relative',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    bellTop: {
+        width: hp(1.2),
+        height: hp(0.4),
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        borderColor: theme.colors.text,
+        borderRadius: hp(0.2),
+        position: 'absolute',
+        top: hp(0.2),
+        left: hp(0.8),
+    },
+    bellBody: {
+        width: hp(2.2),
+        height: hp(1.6),
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        borderColor: theme.colors.text,
+        borderRadius: hp(1.1),
+        position: 'absolute',
+        top: hp(0.5),
+        left: hp(0.3),
+        // Tạo hình chuông với viền cong
+        borderTopLeftRadius: hp(1.1),
+        borderTopRightRadius: hp(1.1),
+        borderBottomLeftRadius: hp(0.3),
+        borderBottomRightRadius: hp(0.3),
+    },
+    bellClapper: {
+        width: hp(0.3),
+        height: hp(0.3),
+        backgroundColor: theme.colors.text,
+        borderRadius: hp(0.15),
+        position: 'absolute',
+        top: hp(1.4),
+        left: hp(1.25),
+    },
+    bellCrack: {
+        width: hp(0.1),
+        height: hp(0.8),
+        backgroundColor: theme.colors.text,
+        position: 'absolute',
+        top: hp(0.7),
+        left: hp(1.35),
+        transform: [{ rotate: '15deg' }],
+    },
+
+    // Stories Styles
+    storiesContainer: {
+        backgroundColor: theme.colors.background,
+        paddingVertical: hp(1),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+
+    storiesScroll: {
+        paddingHorizontal: wp(4),
+    },
+
+    storyItem: {
+        alignItems: 'center',
+        marginRight: wp(4),
+    },
+
+    addStoryIcon: {
+        width: hp(6),
+        height: hp(6),
+        borderRadius: theme.radius.full,
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderWidth: 2,
+        borderColor: theme.colors.primary,
+        borderStyle: 'dashed',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
+    storyText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginTop: hp(0.5),
+        fontWeight: theme.fonts.medium,
+    },
+
+    // Create Post Styles
+    createPostContainer: {
+        backgroundColor: theme.colors.background,
+        paddingBottom: hp(2),
+    },
+
+    createPostBox: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.full,
+        ...theme.shadows.small,
+        marginHorizontal: wp(4),
+        marginVertical: hp(1),
+    },
+
+    createPostInputArea: {
+        flex: 1,
+        marginLeft: wp(3),
+    },
+
+    createPostUserName: {
+        fontSize: hp(1.4),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginBottom: hp(0.5),
+    },
+
+    createPostPlaceholder: {
+        paddingVertical: hp(1.2),
+        justifyContent: 'center',
+    },
+
+    createPostPlaceholderText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textLight,
+    },
+
+    createPostForm: {
+        padding: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: hp(2),
+    },
+
+    createPostFormUserName: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginLeft: wp(3),
+    },
+
+    createPostTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(10),
+        textAlignVertical: 'top',
+        marginBottom: hp(2),
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    createPostFormActions: {
+        marginBottom: hp(2),
+        paddingVertical: hp(1),
+        borderTopWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    createPostFormAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        marginBottom: hp(0.5),
+    },
+
+    createPostFormActionIcon: {
+        width: hp(3.5),
+        height: hp(3.5),
+        borderRadius: theme.radius.full,
+        backgroundColor: theme.colors.backgroundSecondary,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
+    createPostFormActionText: {
+        fontSize: hp(1.5),
+        color: theme.colors.text,
+        marginLeft: wp(2),
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostFormCancelText: {
+        fontSize: hp(1.5),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        borderRadius: theme.radius.sm,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitText: {
+        fontSize: hp(1.5),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    // Inline Form Styles
+    createPostFormInline: {
+        paddingTop: hp(0.5),
+    },
+
+    createPostTextInputInline: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(8),
+        textAlignVertical: 'top',
+        marginBottom: hp(1.5),
+        paddingHorizontal: wp(2),
+        paddingVertical: hp(1),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+
+
+
+    createPostFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostFormCancelText: {
+        fontSize: hp(1.5),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        borderRadius: theme.radius.sm,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitText: {
+        fontSize: hp(1.5),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+
+    createPostIcon: {
+        padding: wp(2),
+    },
+
+
+    createPostActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: wp(4),
+    },
+
+    createPostAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(0.8),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.full,
+    },
+
+    createPostActionText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginLeft: wp(1.5),
+        fontWeight: theme.fonts.medium,
+    },
+
+
+    // Post Creation Form Styles
+    postCreationForm: {
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.md,
+        marginTop: hp(1),
+        marginHorizontal: wp(2),
+        ...theme.shadows.small,
+        zIndex: 1000,
+    },
+
+    postFormInline: {
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.md,
+        marginTop: hp(1),
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(2),
+    },
+
+
+    postFormTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(12),
+        textAlignVertical: 'top',
+        marginBottom: hp(2),
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+    },
+
+    postFormActions: {
+        marginBottom: hp(2),
+        paddingVertical: hp(1),
+        borderTopWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    postFormAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1),
+    },
+
+    postFormActionText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginLeft: wp(1.5),
+        fontWeight: theme.fonts.medium,
+    },
+
+    postFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+    },
+
+    postFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+    },
+
+    postFormCancelText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+    },
+
+    postFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+        borderRadius: theme.radius.sm,
+    },
+
+    postFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+    },
+
+    postFormSubmitText: {
+        fontSize: hp(1.6),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    // Create Post Modal Styles
+    createPostOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-end',
+    },
+
+    createPostBackdrop: {
+        flex: 1,
+    },
+
+    createPostModal: {
+        backgroundColor: theme.colors.background,
+        borderTopLeftRadius: theme.radius.xl,
+        borderTopRightRadius: theme.radius.xl,
+        maxHeight: hp(80),
+    },
+
+    createPostHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+
+    createPostCancel: {
+        paddingVertical: hp(0.5),
+    },
+
+    createPostCancelText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+    },
+
+    createPostTitle: {
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+    },
+
+    createPostShare: {
+        paddingVertical: hp(0.5),
+        paddingHorizontal: wp(3),
+        backgroundColor: theme.colors.primary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostShareText: {
+        fontSize: hp(1.6),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    createPostContent: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(2),
+    },
+
+    createPostUser: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: hp(2),
+    },
+
+    createPostUserName: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginLeft: wp(3),
+    },
+
+    createPostTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(20),
+        textAlignVertical: 'top',
+        padding: 0,
+        margin: 0,
+    },
+
+    // List Styles
+    listStyle: {
+        paddingBottom: hp(10),
+    },
+
+    noPosts: {
+        textAlign: 'center',
+        fontSize: hp(1.8),
+        color: theme.colors.textSecondary,
+        marginTop: hp(2),
+    },
+
+    // Menu Styles
+    menuButton: {
+        padding: wp(2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    menuIconContainer: {
+        width: hp(2.5),
+        height: hp(2),
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    menuLine: {
+        width: hp(2),
+        height: 3,
+        backgroundColor: theme.colors.text,
+        borderRadius: 1.5,
+    },
+    menuText: {
+        fontSize: hp(2.5),
+        color: theme.colors.text,
+        fontWeight: 'bold',
+    },
+
+    menuOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-start',
+        paddingTop: 0, // Để SafeAreaView handle
+    },
+
+    menuBackdrop: {
+        flex: 1,
+    },
+
+    menuContainer: {
+        width: wp(80),
+        height: '100%',
+        backgroundColor: theme.colors.background,
+        ...theme.shadows.large,
+        justifyContent: 'space-between',
+    },
+
+    menuHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(2),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+        backgroundColor: theme.colors.primary,
+    },
+
+    menuUserInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+
+    menuUserDetails: {
+        marginLeft: wp(3),
+        flex: 1,
+    },
+
+    menuUserName: {
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.semiBold,
+        color: 'white',
+        marginBottom: hp(0.2),
+    },
+
+    menuUserEmail: {
+        fontSize: hp(1.4),
+        color: 'rgba(255, 255, 255, 0.8)',
+    },
+
+    menuCloseButton: {
+        padding: wp(2),
+    },
+
+    menuItems: {
+        paddingVertical: hp(1),
+        flex: 1,
+    },
+
+    menuFooter: {
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.border,
+        paddingVertical: hp(1),
+    },
+
+    menuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+
+    menuItemText: {
+        fontSize: hp(1.6),
+        color: theme.colors.text,
+        marginLeft: wp(3),
+        fontWeight: theme.fonts.medium,
+    },
+
+    menuDivider: {
+        height: 1,
+        backgroundColor: theme.colors.border,
+        marginVertical: hp(1),
+    },
+
+    logoutItem: {
+        borderBottomWidth: 0,
+    },
+
+    logoutText: {
+        color: theme.colors.error,
+    },
 })

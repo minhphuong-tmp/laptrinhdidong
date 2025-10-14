@@ -1,4 +1,5 @@
 import { Video } from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import moment from 'moment';
 import { useEffect, useRef, useState } from 'react';
@@ -164,6 +165,45 @@ const ChatScreen = () => {
         }
     };
 
+    const handleImagePicker = async () => {
+        try {
+            const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [4, 3],
+                quality: 0.7,
+            });
+
+            if (!result.canceled && result.assets[0]) {
+                // TODO: Upload image và gửi tin nhắn
+                console.log('Selected image:', result.assets[0].uri);
+                Alert.alert('Thông báo', 'Chức năng gửi ảnh đang được phát triển');
+            }
+        } catch (error) {
+            console.error('Error picking image:', error);
+            Alert.alert('Lỗi', 'Không thể chọn ảnh');
+        }
+    };
+
+    const handleVideoPicker = async () => {
+        try {
+            const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+                allowsEditing: true,
+                quality: 0.7,
+            });
+
+            if (!result.canceled && result.assets[0]) {
+                // TODO: Upload video và gửi tin nhắn
+                console.log('Selected video:', result.assets[0].uri);
+                Alert.alert('Thông báo', 'Chức năng gửi video đang được phát triển');
+            }
+        } catch (error) {
+            console.error('Error picking video:', error);
+            Alert.alert('Lỗi', 'Không thể chọn video');
+        }
+    };
+
     const deleteConversationHandler = async () => {
         if (!conversationId || !user?.id) return;
 
@@ -231,56 +271,62 @@ const ChatScreen = () => {
                 styles.messageContainer,
                 isOwn ? styles.ownMessage : styles.otherMessage
             ]}>
-                {isGroup && !isOwn && (
-                    <View style={styles.groupMessageHeader}>
+
+                <View style={[
+                    styles.messageRow,
+                    isOwn ? styles.ownMessage : styles.otherMessage
+                ]}>
+                    {!isOwn && (
                         <Avatar
                             uri={message.sender?.image}
                             size={hp(3)}
-                            rounded={theme.radius.md}
-                        />
-                        <Text style={styles.senderName}>
-                            {message.sender?.name}
-                        </Text>
-                    </View>
-                )}
-
-                <View style={[
-                    styles.messageBubble,
-                    isOwn ? styles.ownBubble : styles.otherBubble
-                ]}>
-                    {message.message_type === 'image' && (
-                        <Image
-                            source={{ uri: message.file_url }}
-                            style={styles.messageImage}
-                            resizeMode="cover"
+                            rounded={true}
                         />
                     )}
 
-                    {message.message_type === 'video' && (
-                        <Video
-                            source={{ uri: message.file_url }}
-                            style={styles.messageVideo}
-                            useNativeControls
-                            resizeMode="cover"
-                        />
-                    )}
-
-                    {message.message_type === 'text' && (
-                        <Text style={[
-                            styles.messageText,
-                            isOwn ? styles.ownText : styles.otherText
-                        ]}>
-                            {message.content}
-                        </Text>
-                    )}
-
-                    <Text style={[
-                        styles.messageTime,
-                        isOwn ? styles.ownTime : styles.otherTime
+                    <View style={[
+                        styles.bubbleWrapper,
+                        isOwn ? styles.ownBubbleWrapper : styles.otherBubbleWrapper
                     ]}>
-                        {moment(message.created_at).format('HH:mm')}
-                        {message.is_edited && ' (đã chỉnh sửa)'}
-                    </Text>
+                        <View style={[
+                            styles.messageBubble,
+                            isOwn ? styles.ownBubble : styles.otherBubble
+                        ]}>
+                            {message.message_type === 'image' && (
+                                <Image
+                                    source={{ uri: message.file_url }}
+                                    style={styles.messageImage}
+                                    resizeMode="cover"
+                                />
+                            )}
+
+                            {message.message_type === 'video' && (
+                                <Video
+                                    source={{ uri: message.file_url }}
+                                    style={styles.messageVideo}
+                                    useNativeControls
+                                    resizeMode="cover"
+                                />
+                            )}
+
+                            {message.message_type === 'text' && (
+                                <Text style={[
+                                    styles.messageText,
+                                    isOwn ? styles.ownText : styles.otherText
+                                ]}>
+                                    {message.content}
+                                </Text>
+                            )}
+
+                            <Text style={[
+                                styles.messageTime,
+                                isOwn ? styles.ownTime : styles.otherTime
+                            ]}>
+                                {moment(message.created_at).format('HH:mm')}
+                                {message.is_edited && ' (đã chỉnh sửa)'}
+                            </Text>
+                        </View>
+                    </View>
                 </View>
             </View>
         );
@@ -297,18 +343,19 @@ const ChatScreen = () => {
     }
 
     return (
-        <ScreenWrapper bg="white">
+        <ScreenWrapper bg={theme.colors.background}>
             <KeyboardAvoidingView
                 style={styles.container}
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
-                {/* Header */}
+                {/* Messenger Header */}
                 <View style={styles.header}>
-                    <TouchableOpacity onPress={() => router.back()}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
                         <Icon name="arrowLeft" size={hp(2.5)} color={theme.colors.text} />
                     </TouchableOpacity>
 
-                    <View style={styles.headerInfo}>
+                    <TouchableOpacity style={styles.headerInfo}>
                         {conversation?.type === 'group' ? (
                             <GroupAvatar
                                 members={conversation.conversation_members || []}
@@ -318,20 +365,28 @@ const ChatScreen = () => {
                             <Avatar
                                 uri={getConversationAvatar()}
                                 size={hp(4)}
-                                rounded={theme.radius.lg}
+                                rounded={theme.radius.full}
                             />
                         )}
                         <View style={styles.headerText}>
                             <Text style={styles.headerTitle}>{getConversationName()}</Text>
                             <Text style={styles.headerSubtitle}>
-                                {conversation?.type === 'group' ? 'Nhóm' : 'Trực tiếp'}
+                                {conversation?.type === 'group' ? 'Nhóm' : 'Đang hoạt động'}
                             </Text>
                         </View>
-                    </View>
-
-                    <TouchableOpacity>
-                        <Icon name="threeDotsHorizontal" size={hp(2.5)} color={theme.colors.text} />
                     </TouchableOpacity>
+
+                    <View style={styles.headerActions}>
+                        <TouchableOpacity style={styles.headerActionButton}>
+                            <Icon name="video" size={hp(2.5)} color={theme.colors.text} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.headerActionButton}>
+                            <Icon name="phone" size={hp(2.5)} color={theme.colors.text} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.headerActionButton}>
+                            <Icon name="threeDotsHorizontal" size={hp(2.5)} color={theme.colors.text} />
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
                 {/* Messages */}
@@ -343,37 +398,57 @@ const ChatScreen = () => {
                     style={styles.messagesList}
                     contentContainerStyle={styles.messagesContainer}
                     showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
                     onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
                 />
 
-                {/* Input */}
+                {/* Messenger Input */}
                 <View style={styles.inputContainer}>
                     <View style={styles.inputWrapper}>
-                        <TextInput
-                            style={styles.textInput}
-                            value={messageText}
-                            onChangeText={setMessageText}
-                            placeholder="Nhập tin nhắn..."
-                            placeholderTextColor={theme.colors.textLight}
-                            multiline
-                            maxLength={1000}
-                        />
+                        <View style={styles.textInputContainer}>
+                            <TextInput
+                                style={styles.textInput}
+                                value={messageText}
+                                onChangeText={setMessageText}
+                                placeholder="Nhập tin nhắn..."
+                                placeholderTextColor={theme.colors.textSecondary}
+                                multiline
+                                maxLength={1000}
+                            />
+                        </View>
 
-                        <TouchableOpacity
-                            style={styles.sendButton}
-                            onPress={sendMessageHandler}
-                            disabled={sending || !messageText.trim()}
-                        >
-                            {sending ? (
-                                <Loading size="small" />
-                            ) : (
-                                <Icon
-                                    name="send"
-                                    size={hp(2.5)}
-                                    color={messageText.trim() ? theme.colors.primary : theme.colors.textLight}
-                                />
-                            )}
-                        </TouchableOpacity>
+                        {messageText.trim() ? (
+                            <TouchableOpacity
+                                style={styles.sendButton}
+                                onPress={sendMessageHandler}
+                                disabled={sending}
+                            >
+                                {sending ? (
+                                    <Loading size="small" />
+                                ) : (
+                                    <Icon
+                                        name="send"
+                                        size={hp(2.2)}
+                                        color={theme.colors.primary}
+                                    />
+                                )}
+                            </TouchableOpacity>
+                        ) : (
+                            <View style={styles.inputActions}>
+                                <TouchableOpacity
+                                    style={styles.inputActionButton}
+                                    onPress={handleImagePicker}
+                                >
+                                    <Icon name="image" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={styles.inputActionButton}
+                                    onPress={handleVideoPicker}
+                                >
+                                    <Icon name="video" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                </TouchableOpacity>
+                            </View>
+                        )}
                     </View>
                 </View>
             </KeyboardAvoidingView>
@@ -386,28 +461,37 @@ export default ChatScreen;
 const styles = StyleSheet.create({
     container: {
         flex: 1,
+        backgroundColor: theme.colors.background,
     },
     loadingContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: theme.colors.background,
     },
+
+    // Messenger Header
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingHorizontal: wp(4),
         paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
         borderBottomWidth: 1,
-        borderBottomColor: theme.colors.gray,
+        borderBottomColor: theme.colors.border,
+        ...theme.shadows.small,
+    },
+    backButton: {
+        padding: wp(2),
+        marginRight: wp(2),
     },
     headerInfo: {
         flex: 1,
-        marginLeft: wp(3),
         flexDirection: 'row',
         alignItems: 'center',
     },
     headerText: {
-        marginLeft: wp(2),
+        marginLeft: wp(3),
         flex: 1,
     },
     headerTitle: {
@@ -417,17 +501,29 @@ const styles = StyleSheet.create({
     },
     headerSubtitle: {
         fontSize: hp(1.4),
-        color: theme.colors.textLight,
+        color: theme.colors.textSecondary,
     },
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    headerActionButton: {
+        padding: wp(2),
+        marginLeft: wp(1),
+    },
+
+    // Messages
     messagesList: {
         flex: 1,
+        backgroundColor: theme.colors.background,
     },
     messagesContainer: {
         paddingHorizontal: wp(4),
         paddingVertical: hp(1),
+        paddingBottom: hp(2),
     },
     messageContainer: {
-        marginVertical: hp(0.5),
+        marginVertical: hp(0.7),
     },
     ownMessage: {
         alignItems: 'flex-end',
@@ -435,16 +531,32 @@ const styles = StyleSheet.create({
     otherMessage: {
         alignItems: 'flex-start',
     },
-    groupMessageHeader: {
+    bubbleWrapper: {
+        flex: 1,
+    },
+    ownBubbleWrapper: {
+        alignItems: 'flex-end',
+    },
+    otherBubbleWrapper: {
+        alignItems: 'flex-start',
+        marginLeft: 4,
+    },
+    otherBubble: {
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderBottomLeftRadius: theme.radius.sm,
+        maxWidth: wp(70),
+        marginTop: 10,
+    },
+    messageRow: {
         flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: hp(0.5),
+        alignItems: 'flex-end',
     },
     senderName: {
         fontSize: hp(1.4),
         fontWeight: theme.fonts.medium,
         color: theme.colors.text,
-        marginLeft: wp(2),
+        marginLeft: wp(8), // Căn với bong bóng chat
+        marginBottom: hp(0.3),
     },
     messageBubble: {
         maxWidth: wp(70),
@@ -455,10 +567,12 @@ const styles = StyleSheet.create({
     ownBubble: {
         backgroundColor: theme.colors.primary,
         borderBottomRightRadius: theme.radius.sm,
+        maxWidth: wp(70),
     },
     otherBubble: {
-        backgroundColor: theme.colors.gray,
+        backgroundColor: theme.colors.backgroundSecondary,
         borderBottomLeftRadius: theme.radius.sm,
+        maxWidth: wp(70),
     },
     messageText: {
         fontSize: hp(1.6),
@@ -492,31 +606,49 @@ const styles = StyleSheet.create({
     otherTime: {
         color: theme.colors.textLight,
     },
+    // Messenger Input
     inputContainer: {
         paddingHorizontal: wp(4),
-        paddingVertical: hp(1),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
         borderTopWidth: 1,
-        borderTopColor: theme.colors.gray,
+        borderTopColor: theme.colors.border,
     },
     inputWrapper: {
         flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: theme.colors.gray,
-        borderRadius: theme.radius.xl,
+        alignItems: 'flex-end',
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.full,
         paddingHorizontal: wp(3),
         paddingVertical: hp(0.8),
         minHeight: hp(5),
     },
-    textInput: {
+    inputActionButton: {
+        padding: wp(2),
+        marginRight: wp(1),
+    },
+    textInputContainer: {
         flex: 1,
+        marginHorizontal: wp(1),
+    },
+    textInput: {
         fontSize: hp(1.6),
         color: theme.colors.text,
         maxHeight: hp(10),
-        paddingVertical: hp(0.5),
+        paddingVertical: hp(1.2),
         textAlignVertical: 'center',
     },
+    inputActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
     sendButton: {
+        backgroundColor: theme.colors.primary,
+        borderRadius: theme.radius.full,
+        width: hp(4),
+        height: hp(4),
+        justifyContent: 'center',
+        alignItems: 'center',
         marginLeft: wp(2),
-        padding: hp(0.5),
     },
 });

@@ -10,11 +10,13 @@ const Avatar = ({
     rounded = theme.radius.md,
     style = {}
 }) => {
+    const borderRadius = rounded === true ? size / 2 : rounded;
+
     return (
         <Image
             source={getUserImageSrc(uri)}
             transition={100}
-            style={[styles.avatar, { height: size, width: size, borderRadius: rounded }, style]}
+            style={[styles.avatar, { height: size, width: size, borderRadius }, style]}
         />
     );
 };
@@ -24,7 +26,5 @@ export default Avatar;
 const styles = StyleSheet.create({
     avatar: {
         borderCurve: 'continuous',
-        borderColor: theme.colors.darkLight,
-        borderWidth: 1,
     },
 });

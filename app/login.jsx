@@ -31,20 +31,31 @@ const Login = () => {
         let email = emailRef.current.trim();
         let password = passwordRef.current.trim();
 
+        console.log('Attempting login with:', email);
         setLoading(true);
 
-        const { data: { session }, error } = await supabase.auth.signInWithPassword({
-            email,
-            password,
-        });
+        try {
+            const { data: { session }, error } = await supabase.auth.signInWithPassword({
+                email,
+                password,
+            });
 
-        setLoading(false);
+            console.log('Login response:', { session: !!session, error: error?.message });
 
-        if (error) {
-            Alert.alert('Login', error.message);
-        } else if (session) {
-            // AuthContext sẽ tự động handle navigation
-            console.log('Login successful, AuthContext will handle navigation');
+            if (error) {
+                console.log('Login error:', error);
+                Alert.alert('Lỗi đăng nhập', error.message);
+            } else if (session) {
+                console.log('Login successful, session:', session.user.id);
+                // AuthContext sẽ tự động handle navigation
+                setAuth(session.user);
+                console.log('setAuth called, waiting for AuthContext...');
+            }
+        } catch (err) {
+            console.log('Login exception:', err);
+            Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng nhập');
+        } finally {
+            setLoading(false);
         }
     }
 

@@ -56,8 +56,9 @@ const PostCard = ({
     const [likes, setLikes] = useState([]);
 
     useEffect(() => {
+        // Khởi tạo likes từ item.postLikes
         setLikes(item?.postLikes || []);
-    }, []);
+    }, [item?.id]); // Chỉ khởi tạo khi post thay đổi
 
     const openPostDetails = () => {
         if (!showMoreIcon) return null;
@@ -67,6 +68,7 @@ const PostCard = ({
     const onLike = async () => {
         try {
             if (liked) {
+                // Remove like
                 const updatedLikes = likes.filter(like => like.userId !== currentUser?.id);
                 setLikes([...updatedLikes]);
                 const res = await removePostLike(item?.id, currentUser?.id);
@@ -74,21 +76,30 @@ const PostCard = ({
                     setLikes([...likes]); // Revert on error
                     Alert.alert('Lỗi', `Không thể bỏ like: ${res.msg}`);
                 } else {
-                    console.log(' Like removed successfully');
+                    console.log('Like removed successfully');
                 }
             } else {
-                const data = {
+                // Add like
+                const newLike = {
                     userId: currentUser?.id,
                     postId: item?.id,
+                    user: {
+                        id: currentUser?.id,
+                        name: currentUser?.name,
+                        image: currentUser?.image
+                    }
                 };
-                setLikes([...likes, data]);
-                const res = await createPostLike(data);
+                setLikes([...likes, newLike]);
+                const res = await createPostLike({
+                    userId: currentUser?.id,
+                    postId: item?.id,
+                });
                 if (!res.success) {
-                    console.error(' Add like failed:', res.msg);
+                    console.error('Add like failed:', res.msg);
                     setLikes(likes.filter(like => like.userId !== currentUser?.id)); // Revert on error
                     Alert.alert('Lỗi', `Không thể like: ${res.msg}`);
                 } else {
-                    console.log(' Like added successfully');
+                    console.log('Like added successfully');
                 }
             }
         } catch (error) {
@@ -104,15 +115,20 @@ const PostCard = ({
     };
 
     const onShare = async () => {
-        let content = { message: stripHtmlTags(item?.body) };
-        if (item?.file) {
-            // download the file then share the local uri
-            setLoading(true);
-            let url = await downloadFile(getSupabaseFileUrl(item?.file?.url));
+        try {
+            let content = { message: stripHtmlTags(item?.body) };
+            if (item?.file) {
+                // download the file then share the local uri
+                setLoading(true);
+                let url = await downloadFile(getSupabaseFileUrl(item?.file?.url));
+                setLoading(false);
+                content.url = url;
+            }
+            Share.share(content);
+        } catch (error) {
+            console.log('Share error:', error);
             setLoading(false);
-            content.url = url;
         }
-        Share.share(content);
     };
 
     const handlePostDelete = () => {
@@ -135,22 +151,29 @@ const PostCard = ({
 
     return (
         <View style={[styles.container, hasShadow && shadowStyles]}>
+            {/* Facebook Post Header */}
             <View style={styles.header}>
                 <View style={styles.userInfo}>
                     <Avatar
-                        size={hp(3.5)}
-                        uri={item?.user?.image}
-                        rounded={theme.radius.md}
+                        size={hp(4)}
+                        uri={(() => {
+                            console.log('PostCard - item.user.image:', item?.user?.image);
+                            return item?.user?.image;
+                        })()}
+                        rounded={theme.radius.full}
                     />
-                    <View>
+                    <View style={styles.userDetails}>
                         <Text style={styles.username}>{item?.user?.name || 'Unknown User'}</Text>
-                        <Text style={styles.postTime}>{createdAt}</Text>
+                        <View style={styles.postMeta}>
+                            <Text style={styles.postTime}>{createdAt}</Text>
+                            <Text style={styles.postPrivacy}>🌍</Text>
+                        </View>
                     </View>
                 </View>
 
                 {showMoreIcon && (
-                    <TouchableOpacity onPress={openPostDetails} style={{ marginLeft: 10, position: 'absolute', right: 10 }}>
-                        <Icon name="threeDotsHorizontal" size={hp(3.4)} strokeWidth={3} color={theme.colors.text} />
+                    <TouchableOpacity onPress={openPostDetails} style={styles.moreButton}>
+                        <Icon name="threeDotsHorizontal" size={hp(2.5)} color={theme.colors.textSecondary} />
                     </TouchableOpacity>
                 )}
                 {showDelete && currentUser?.id === item?.user?.id && (
@@ -159,12 +182,13 @@ const PostCard = ({
                             <Icon name="edit" size={hp(2.5)} color={theme.colors.text} />
                         </TouchableOpacity>
                         <TouchableOpacity onPress={handlePostDelete}>
-                            <Icon name="delete" size={hp(2.5)} color={theme.colors.rose} />
+                            <Icon name="delete" size={hp(2.5)} color={theme.colors.error} />
                         </TouchableOpacity>
                     </View>
                 )}
             </View>
 
+            {/* Facebook Post Content */}
             <View style={styles.content}>
                 <View style={styles.postBody}>
                     {item?.body && (
@@ -194,32 +218,80 @@ const PostCard = ({
                 )}
             </View>
 
+            {/* Facebook Post Footer */}
             <View style={styles.footer}>
-                <View style={styles.footerButton}>
-                    <TouchableOpacity onPress={onLike}>
+                {/* Reactions Summary - Only show if there are likes */}
+                {likes.length > 0 && (
+                    <View style={styles.reactionsSummary}>
+                        <View style={styles.reactionsLeft}>
+                            <View style={styles.reactionIcons}>
+                                <Icon
+                                    name="heart"
+                                    size={hp(1.8)}
+                                    fill="#F02849"
+                                    color="#F02849"
+                                />
+                            </View>
+                            <Text style={styles.reactionsText}>
+                                {(() => {
+                                    // Ưu tiên state local (likes) hơn database (item.postLikes)
+                                    const displayLikes = likes.length > 0 ? likes : (item?.postLikes || []);
+                                    const likeCount = displayLikes.length;
+
+                                    if (likeCount === 1) {
+                                        // Nếu có user object từ database, dùng nó
+                                        if (displayLikes[0]?.user?.name) {
+                                            return displayLikes[0].user.name;
+                                        }
+                                        // Nếu không có, dùng currentUser nếu là like của user hiện tại
+                                        if (displayLikes[0]?.userId === currentUser?.id) {
+                                            return currentUser?.name || 'Bạn';
+                                        }
+                                        // Fallback cuối cùng
+                                        return 'Người dùng';
+                                    } else if (likeCount > 1) {
+                                        // Tương tự cho multiple likes
+                                        let firstName = 'Người dùng';
+                                        if (displayLikes[0]?.user?.name) {
+                                            firstName = displayLikes[0].user.name;
+                                        } else if (displayLikes[0]?.userId === currentUser?.id) {
+                                            firstName = currentUser?.name || 'Bạn';
+                                        }
+                                        return `${firstName} + ${likeCount - 1} người khác`;
+                                    }
+                                    return '';
+                                })()}
+                            </Text>
+                        </View>
+                        <TouchableOpacity onPress={openPostDetails}>
+                            <Text style={styles.commentsText}>{item?.comments?.[0]?.count || 0} bình luận</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
+
+                {/* Action Buttons */}
+                <View style={styles.actionButtons}>
+                    <TouchableOpacity onPress={onLike} style={styles.actionButton}>
                         <Icon
                             name="heart"
-                            size={24}
-                            fill={liked ? theme.colors.rose : 'transparent'}
-                            color={liked ? theme.colors.rose : theme.colors.textLight}
+                            size={hp(2.2)}
+                            fill={liked ? '#F02849' : 'transparent'}
+                            color={liked ? '#F02849' : theme.colors.textSecondary}
                         />
+                        <Text style={[styles.actionText, liked && styles.likedActionText]}>Thích</Text>
                     </TouchableOpacity>
-                    <Text style={styles.count}>{likes.length}</Text>
-                </View>
-                <View style={styles.footerButton}>
-                    <TouchableOpacity onPress={openPostDetails}>
-                        <Icon name="comment" size={24} color={theme.colors.textLight} />
+                    <TouchableOpacity onPress={openPostDetails} style={styles.actionButton}>
+                        <Icon name="comment" size={hp(2.2)} color={theme.colors.textSecondary} />
+                        <Text style={styles.actionText}>Bình luận</Text>
                     </TouchableOpacity>
-                    <Text style={styles.count}>{item?.comments?.[0]?.count || 0}</Text>
-                </View>
-                <View style={styles.footerButton}>
-                    {loading ? (
-                        <Loading size="small" />
-                    ) : (
-                        <TouchableOpacity onPress={onShare}>
-                            <Icon name="share" size={24} color={theme.colors.textLight} />
-                        </TouchableOpacity>
-                    )}
+                    <TouchableOpacity onPress={onShare} style={styles.actionButton}>
+                        {loading ? (
+                            <Loading size="small" />
+                        ) : (
+                            <Icon name="share" size={hp(2.2)} color={theme.colors.textSecondary} />
+                        )}
+                        <Text style={styles.actionText}>Chia sẻ</Text>
+                    </TouchableOpacity>
                 </View>
             </View>
         </View>
@@ -230,64 +302,136 @@ export default PostCard;
 
 const styles = StyleSheet.create({
     container: {
-        marginBottom: 15,
-        borderRadius: theme.radius.xl + 1,
-        borderCurve: 'continuous',
-        paddingVertical: 12,
-        backgroundColor: 'white',
-        borderWidth: 0.5,
-        borderColor: theme.colors.gray,
-        shadowColor: '#000',
+        marginBottom: hp(1),
+        backgroundColor: theme.colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
     },
+
+    // Facebook Post Header
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
     },
     userInfo: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
+        flex: 1,
+    },
+    userDetails: {
+        marginLeft: wp(3),
+        flex: 1,
     },
     username: {
-        fontSize: hp(1.7),
-        color: theme.colors.textDark,
-        fontWeight: theme.fonts.medium,
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.semiBold,
+        color: theme.colors.text,
+        marginBottom: hp(0.2),
+    },
+    postMeta: {
+        flexDirection: 'row',
+        alignItems: 'center',
     },
     postTime: {
         fontSize: hp(1.4),
-        color: theme.colors.textLight,
-        fontWeight: theme.fonts.medium,
+        color: theme.colors.textSecondary,
     },
-    content: {
-        gap: 10,
+    postPrivacy: {
+        fontSize: hp(1.2),
+        marginLeft: wp(1),
     },
-    postMedia: {
-        height: hp(40),
-        width: '100%',
-        borderRadius: theme.radius.xl,
-        borderCurve: 'continuous',
-    },
-    postBody: {
-        marginLeft: 5,
+    moreButton: {
+        padding: wp(2),
     },
     actions: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 18,
+        gap: wp(3),
     },
-    count: {
-        color: theme.colors.text,
-        fontSize: hp(1.8),
+
+    // Facebook Post Content
+    content: {
+        paddingHorizontal: wp(4),
     },
+    postBody: {
+        marginBottom: hp(1),
+    },
+    postMedia: {
+        width: '100%',
+        height: hp(40),
+        borderRadius: theme.radius.sm,
+        marginBottom: hp(1),
+    },
+
+    // Facebook Post Footer
     footer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 15,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
     },
-    footerButton: {
-        marginLeft: 5,
+
+    // Reactions Summary
+    reactionsSummary: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingBottom: hp(1),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+    reactionsLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
+        flex: 1,
+    },
+    reactionIcons: {
+        flexDirection: 'row',
+        marginRight: wp(2),
+    },
+    reactionIcon: {
+        width: hp(2.2),
+        height: hp(2.2),
+        borderRadius: theme.radius.full,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginLeft: wp(-0.5),
+        borderWidth: 1,
+        borderColor: 'white',
+    },
+    reactionsText: {
+        fontSize: hp(1.4),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+    commentsText: {
+        fontSize: hp(1.4),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+
+    // Action Buttons
+    actionButtons: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        paddingTop: hp(0.5),
+    },
+    actionButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: hp(0.8),
+        paddingHorizontal: wp(3),
+        borderRadius: theme.radius.sm,
+        flex: 1,
+        justifyContent: 'center',
+    },
+    actionText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+        marginLeft: wp(2),
+        fontWeight: theme.fonts.medium,
+    },
+    likedActionText: {
+        color: '#F02849',
     },
 });

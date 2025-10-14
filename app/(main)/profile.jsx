@@ -1,12 +1,12 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Icon from '../../assets/icons';
-import Avatar from '../../components/Avatar';
 import Header from '../../components/Header';
 import Loading from '../../components/Loading';
 import PostCard from '../../components/PostCard';
 import ScreenWrapper from '../../components/ScreenWrapper';
+import UserAvatar from '../../components/UserAvatar';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
@@ -16,8 +16,34 @@ var limit = 0;
 const Profile = () => {
     const { user, setAuth } = useAuth();
     const router = useRouter();
+
     const [hasMore, setHasMore] = useState(true);
     const [posts, setPosts] = useState([]);
+    const [userInfo, setUserInfo] = useState(null);
+
+    // Lấy thông tin user từ database
+    useEffect(() => {
+        const getUserInfo = async () => {
+            if (user?.id) {
+                try {
+                    const { data } = await supabase
+                        .from('users')
+                        .select('name, address, phone, image')
+                        .eq('id', user.id)
+                        .single();
+
+                    if (data) {
+                        setUserInfo(data);
+                        console.log('Profile - user info from DB:', data);
+                    }
+                } catch (error) {
+                    console.log('Error getting user info:', error);
+                }
+            }
+        };
+
+        getUserInfo();
+    }, [user?.id]);
 
     const onLogout = async () => {
         try {
@@ -68,7 +94,7 @@ const Profile = () => {
         <ScreenWrapper bg="white" >
             <FlatList
                 data={posts}
-                ListHeaderComponent={user ? <UserHeader user={user} router={router} handleLogout={handleLogout} /> : null}
+                ListHeaderComponent={user ? <UserHeader user={user} userInfo={userInfo} router={router} handleLogout={handleLogout} /> : null}
                 ListHeaderComponentStyle={{ marginBottom: 30 }}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.listStyle}
@@ -102,7 +128,7 @@ const Profile = () => {
     );
 };
 
-const UserHeader = ({ user, router, handleLogout }) => {
+const UserHeader = ({ user, userInfo, router, handleLogout }) => {
     return (
         <View style={{ flex: 1, backgroundColor: 'white', paddingHorizontal: wp(3) }}>
             <View>
@@ -116,8 +142,8 @@ const UserHeader = ({ user, router, handleLogout }) => {
             <View style={styles.container}>
                 <View style={{ gap: 15 }}>
                     <View style={styles.avatarContainer}>
-                        <Avatar
-                            uri={user?.image}
+                        <UserAvatar
+                            user={user}
                             size={hp(12)}
                             rounded={theme.radius.xxl * 1.4}
                         />
@@ -131,12 +157,11 @@ const UserHeader = ({ user, router, handleLogout }) => {
                     <View style={{ alignItems: 'center', gap: 4 }}>
 
                         <Text style={styles.userName}>
-                            {user && user?.name}
-
+                            {userInfo?.name || user?.user_metadata?.name || user?.name || 'User'}
                         </Text>
 
                         <Text style={styles.infoText}>
-                            {user && user.address}
+                            {userInfo?.address || user?.address || ''}
                         </Text>
                     </View>
 
@@ -146,8 +171,7 @@ const UserHeader = ({ user, router, handleLogout }) => {
 
                             </Icon>
                             <Text style={styles.infoText}>
-                                {user && user.email}
-
+                                {user?.email || 'Chưa cập nhật email'}
                             </Text>
 
 
@@ -155,27 +179,15 @@ const UserHeader = ({ user, router, handleLogout }) => {
                         </View>
 
                     </View>
-                    {
-                        user && user.phoneNumber && (
-                            <View style={{ gap: 10 }}>
-                                <View style={styles.info}>
-                                    <Icon name="call" size={20} color={theme.colors.textLight}>
-
-                                    </Icon>
-                                    <Text style={styles.infoText}>
-                                        {user && user.phoneNumber}
-
-                                    </Text>
-
-
-
-                                </View>
-
-                            </View>
-                        )
-
-
-                    }
+                    <View style={{ gap: 10 }}>
+                        <View style={styles.info}>
+                            <Icon name="call" size={20} color={theme.colors.textLight}>
+                            </Icon>
+                            <Text style={styles.infoText}>
+                                {userInfo?.phone || user?.phoneNumber || 'Chưa cập nhật số điện thoại'}
+                            </Text>
+                        </View>
+                    </View>
                     {
                         user && user.bio && (
 

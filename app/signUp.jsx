@@ -50,6 +50,7 @@ const SignUp = () => {
             Alert.alert('Đăng ký', error.message);
         } else if (session) {
             // AuthContext sẽ tự động handle navigation
+            setAuth(session.user);
             Alert.alert('Thành công', 'Đăng ký thành công! Đang đăng nhập...');
         }
     };
