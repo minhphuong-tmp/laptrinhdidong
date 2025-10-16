@@ -1,6 +1,6 @@
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import moment from 'moment';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import Icon from '../../assets/icons';
 import Avatar from '../../components/Avatar';
@@ -24,6 +24,13 @@ const ChatList = () => {
         loadConversations();
     }, []);
 
+    // Refresh khi quay lại màn hình chat list
+    useFocusEffect(
+        useCallback(() => {
+            loadConversations(false);
+        }, [])
+    );
+
     // Realtime subscription để cập nhật tin nhắn mới
     useEffect(() => {
         if (!user?.id) return;
@@ -34,7 +41,6 @@ const ChatList = () => {
             subscriptionRef.current = null;
         }
 
-        console.log('Setting up chat list realtime subscription');
 
         const channel = supabase
             .channel(`chat-list-updates-${user.id}`) // Unique channel name
@@ -43,18 +49,23 @@ const ChatList = () => {
                 schema: 'public',
                 table: 'messages'
             }, (payload) => {
-                console.log('New message in chat list:', payload.new);
                 // Reload không hiển thị loading để tránh UI bị reload
                 loadConversations(false);
             })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'conversation_members'
+            }, (payload) => {
+                // Reload để cập nhật unread count
+                loadConversations(false);
+            })
             .subscribe((status) => {
-                console.log('Chat list channel status:', status);
             });
 
         subscriptionRef.current = channel;
 
         return () => {
-            console.log('Unsubscribing from chat list channel');
             if (subscriptionRef.current) {
                 subscriptionRef.current.unsubscribe();
                 subscriptionRef.current = null;
@@ -162,20 +173,20 @@ const ChatList = () => {
         const member = conversation.conversation_members?.find(
             m => m.user_id === user.id
         );
-        if (!member || !conversation.messages) return 0;
+        if (!member || !conversation.messages) {
+            console.log('No member or messages for conversation:', conversation.id);
+            return 0;
+        }
 
         const lastReadAt = new Date(member.last_read_at);
-        const unreadMessages = conversation.messages.filter(msg =>
-            new Date(msg.created_at) > lastReadAt && msg.sender_id !== user.id
-        );
+        const unreadMessages = conversation.messages.filter(msg => {
+            const messageTime = new Date(msg.created_at);
+            const isUnread = messageTime > lastReadAt && msg.sender_id !== user.id;
+            return isUnread;
+        });
 
-        console.log('=== UNREAD COUNT DEBUG ===');
-        console.log('Conversation ID:', conversation.id);
-        console.log('Member last_read_at:', member.last_read_at);
-        console.log('LastReadAt Date:', lastReadAt);
-        console.log('Total messages:', conversation.messages.length);
-        console.log('Unread messages count:', unreadMessages.length);
-        console.log('Unread messages:', unreadMessages.map(m => ({ id: m.id, created_at: m.created_at, sender_id: m.sender_id })));
+        // Debug unread count
+        console.log('Unread count:', unreadMessages.length, 'for conversation:', conversation.id);
 
         return unreadMessages.length;
     };

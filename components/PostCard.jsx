@@ -166,7 +166,6 @@ const PostCard = ({
                         <Text style={styles.username}>{item?.user?.name || 'Unknown User'}</Text>
                         <View style={styles.postMeta}>
                             <Text style={styles.postTime}>{createdAt}</Text>
-                            <Text style={styles.postPrivacy}>🌍</Text>
                         </View>
                     </View>
                 </View>

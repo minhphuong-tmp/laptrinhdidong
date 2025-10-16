@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
     FlatList,
+    Image,
     Modal,
     Pressable,
     SafeAreaView,
@@ -226,7 +227,12 @@ const Home = () => {
                 {/* Facebook Header */}
                 <View style={styles.header}>
                     <View style={styles.headerLeft}>
-                        <Text style={styles.logo}>facebook</Text>
+                        <Image
+                            source={require('../../assets/images/logokma.jpg')}
+                            style={styles.logoImage}
+                            resizeMode="contain"
+                        />
+                        <Text style={styles.logo}>KMA</Text>
                     </View>
                     <View style={styles.headerRight}>
                         <TouchableOpacity
@@ -491,12 +497,19 @@ const styles = StyleSheet.create({
 
     headerLeft: {
         flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
     },
 
     logo: {
         fontSize: hp(2.8),
         fontWeight: theme.fonts.bold,
         color: theme.colors.primary,
+        marginLeft: wp(2),
+    },
+    logoImage: {
+        width: hp(2.5),
+        height: hp(2.5),
     },
 
     headerRight: {

@@ -1,5 +1,72 @@
 import { supabase } from "../lib/supabase";
 
+// ===== MEDIA UPLOAD =====
+export const uploadMediaFile = async (file, type = 'image') => {
+    try {
+        // Tạo tên file unique
+        const fileExt = file.uri.split('.').pop();
+        const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+        const folderName = type === 'image' ? 'images' : 'videos';
+        const filePath = `${folderName}/${fileName}`;
+
+        // Upload file bằng Supabase client (theo cách imageService.js)
+
+        // Đọc file thành base64 (theo cách imageService.js)
+        const FileSystem = require('expo-file-system');
+        const { decode } = require('base64-arraybuffer');
+
+        const fileBase64 = await FileSystem.readAsStringAsync(file.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+        });
+        const fileData = decode(fileBase64); // array buffer
+
+        console.log('Starting upload for:', type, 'File size:', file.fileSize, 'Data size:', fileData.byteLength);
+
+        // Upload bằng Supabase client (theo cách imageService.js)
+        const { data, error } = await supabase.storage
+            .from('media')
+            .upload(filePath, fileData, {
+                cacheControl: '3600',
+                upsert: false,
+                contentType: type === 'image' ? 'image/*' : 'video/*'
+            });
+
+        if (error) {
+            console.log('Upload error:', error);
+            return { success: false, msg: `Upload failed: ${error.message}` };
+        }
+
+        console.log('Upload success:', data);
+
+        // Lấy public URL
+        const { data: urlData } = supabase.storage
+            .from('media')
+            .getPublicUrl(filePath);
+
+        const publicUrl = urlData.publicUrl;
+
+        console.log('Upload successful:', {
+            filePath: filePath,
+            publicUrl: publicUrl,
+            fileName: fileName
+        });
+
+        return {
+            success: true,
+            data: {
+                file_url: publicUrl,
+                file_path: filePath,
+                file_name: fileName,
+                file_size: file.fileSize || 0,
+                mime_type: file.mimeType || (type === 'image' ? 'image/jpeg' : 'video/mp4')
+            }
+        };
+    } catch (error) {
+        console.log('Upload media error:', error);
+        return { success: false, msg: 'Không thể upload file' };
+    }
+};
+
 // ===== CONVERSATIONS =====
 export const createConversation = async (data) => {
     try {

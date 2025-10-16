@@ -29,7 +29,8 @@ import {
     getConversationById,
     getMessages,
     markConversationAsRead,
-    sendMessage
+    sendMessage,
+    uploadMediaFile
 } from '../../services/chatService';
 
 const ChatScreen = () => {
@@ -40,6 +41,9 @@ const ChatScreen = () => {
     const [conversation, setConversation] = useState(null);
     const [loading, setLoading] = useState(true);
     const [sending, setSending] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    const [playingVideo, setPlayingVideo] = useState(null);
+    const videoRefs = useRef({});
     const [messageText, setMessageText] = useState('');
     const flatListRef = useRef(null);
 
@@ -128,7 +132,10 @@ const ChatScreen = () => {
 
     const markAsRead = async () => {
         if (user?.id) {
-            await markConversationAsRead(conversationId, user.id);
+            const result = await markConversationAsRead(conversationId, user.id);
+            if (result.success) {
+                console.log('Marked as read');
+            }
         }
     };
 
@@ -175,9 +182,16 @@ const ChatScreen = () => {
             });
 
             if (!result.canceled && result.assets[0]) {
-                // TODO: Upload image và gửi tin nhắn
-                console.log('Selected image:', result.assets[0].uri);
-                Alert.alert('Thông báo', 'Chức năng gửi ảnh đang được phát triển');
+                const image = result.assets[0];
+
+                // Kiểm tra kích thước file (10MB cho ảnh)
+                if (image.fileSize && image.fileSize > 10 * 1024 * 1024) {
+                    Alert.alert('Lỗi', 'Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 10MB');
+                    return;
+                }
+
+                console.log('Selected image:', image);
+                await sendMediaMessage(image, 'image');
             }
         } catch (error) {
             console.error('Error picking image:', error);
@@ -190,17 +204,95 @@ const ChatScreen = () => {
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Videos,
                 allowsEditing: true,
-                quality: 0.7,
+                quality: 0.05, // Giảm quality cực thấp để nén mạnh nhất
+                videoMaxDuration: 30, // Giới hạn 30 giây
             });
 
             if (!result.canceled && result.assets[0]) {
-                // TODO: Upload video và gửi tin nhắn
-                console.log('Selected video:', result.assets[0].uri);
-                Alert.alert('Thông báo', 'Chức năng gửi video đang được phát triển');
+                const video = result.assets[0];
+
+                // Kiểm tra kích thước file (30MB)
+                if (video.fileSize && video.fileSize > 30 * 1024 * 1024) {
+                    Alert.alert('Lỗi', 'Video quá lớn. Vui lòng chọn video nhỏ hơn 30MB');
+                    return;
+                }
+
+                console.log('Selected video:', {
+                    uri: video.uri,
+                    fileSize: video.fileSize,
+                    fileSizeMB: video.fileSize ? (video.fileSize / (1024 * 1024)).toFixed(2) + 'MB' : 'Unknown',
+                    duration: video.duration,
+                    width: video.width,
+                    height: video.height
+                });
+                await sendMediaMessage(video, 'video');
             }
         } catch (error) {
             console.error('Error picking video:', error);
             Alert.alert('Lỗi', 'Không thể chọn video');
+        }
+    };
+
+    const sendMediaMessage = async (file, type) => {
+        if (!file || uploading) return;
+
+        setUploading(true);
+        console.log('Sending', type, 'message...');
+
+        try {
+            // Tạo timeout cho upload (60 giây)
+            const uploadPromise = uploadMediaFile(file, type);
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Upload timeout')), 60000)
+            );
+
+            const uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
+
+            if (!uploadResult.success) {
+                Alert.alert('Lỗi', uploadResult.msg || 'Không thể upload file');
+                setUploading(false);
+                return;
+            }
+
+            // Gửi tin nhắn với file_url
+            const messageResult = await sendMessage({
+                conversation_id: conversationId,
+                sender_id: user.id,
+                content: type === 'image' ? '📷 Hình ảnh' : '🎥 Video',
+                message_type: type,
+                file_url: uploadResult.data.file_url
+            });
+
+            if (messageResult.success) {
+                console.log('Media message sent successfully');
+
+                // Thêm tin nhắn vào danh sách ngay lập tức
+                const newMessage = {
+                    ...messageResult.data,
+                    sender: {
+                        id: user.id,
+                        name: user.name,
+                        image: user.image
+                    }
+                };
+                setMessages(prev => [...prev, newMessage]);
+
+                // Scroll to bottom
+                setTimeout(() => {
+                    flatListRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+            } else {
+                Alert.alert('Lỗi', messageResult.msg || 'Không thể gửi tin nhắn');
+            }
+        } catch (error) {
+            console.error('Error sending media message:', error);
+            if (error.message === 'Upload timeout') {
+                Alert.alert('Lỗi', 'Upload quá lâu. Vui lòng thử lại với video nhỏ hơn');
+            } else {
+                Alert.alert('Lỗi', 'Không thể gửi tin nhắn: ' + error.message);
+            }
+        } finally {
+            setUploading(false);
         }
     };
 
@@ -288,44 +380,107 @@ const ChatScreen = () => {
                         styles.bubbleWrapper,
                         isOwn ? styles.ownBubbleWrapper : styles.otherBubbleWrapper
                     ]}>
-                        <View style={[
-                            styles.messageBubble,
-                            isOwn ? styles.ownBubble : styles.otherBubble
-                        ]}>
-                            {message.message_type === 'image' && (
-                                <Image
-                                    source={{ uri: message.file_url }}
-                                    style={styles.messageImage}
-                                    resizeMode="cover"
-                                />
-                            )}
+                        {message.message_type === 'image' ? (
+                            <Image
+                                source={{ uri: message.file_url }}
+                                style={styles.messageImage}
+                                resizeMode="cover"
+                                onError={(error) => {
+                                    console.log('Image load error:', error);
+                                    console.log('Image URL:', message.file_url);
+                                }}
+                                onLoad={() => {
+                                    console.log('Image loaded successfully:', message.file_url);
+                                }}
+                            />
+                        ) : message.message_type === 'video' ? (
+                            <TouchableOpacity
+                                style={styles.videoContainer}
+                                onPress={() => {
+                                    const videoId = message.id;
+                                    console.log('Video pressed, current playing:', playingVideo, 'videoId:', videoId);
 
-                            {message.message_type === 'video' && (
+                                    if (playingVideo === videoId) {
+                                        // Pause video
+                                        console.log('Pausing video');
+                                        setPlayingVideo(null);
+                                        videoRefs.current[videoId]?.pauseAsync();
+                                    } else {
+                                        // Play video
+                                        console.log('Playing video');
+                                        setPlayingVideo(videoId);
+                                        videoRefs.current[videoId]?.playAsync();
+                                    }
+                                }}
+                            >
                                 <Video
+                                    ref={(ref) => {
+                                        if (ref) {
+                                            videoRefs.current[message.id] = ref;
+                                            console.log('Video ref set for:', message.id);
+                                        }
+                                    }}
                                     source={{ uri: message.file_url }}
                                     style={styles.messageVideo}
-                                    useNativeControls
+                                    useNativeControls={true}
                                     resizeMode="cover"
+                                    shouldPlay={playingVideo === message.id}
+                                    onPlaybackStatusUpdate={(status) => {
+                                        console.log('Video status:', status.isPlaying, 'for video:', message.id);
+                                    }}
+                                    isLooping={false}
+                                    onError={(error) => {
+                                        console.log('Video load error:', error);
+                                        console.log('Video URL:', message.file_url);
+                                    }}
+                                    onLoad={() => {
+                                        console.log('Video loaded successfully:', message.file_url);
+                                        console.log('Video message type:', message.message_type);
+                                        console.log('Video file_url exists:', !!message.file_url);
+                                    }}
                                 />
-                            )}
+                                {playingVideo !== message.id && (
+                                    <View style={styles.playButtonOverlay}>
+                                        <Text style={styles.playButtonText}>▶</Text>
+                                    </View>
+                                )}
+                            </TouchableOpacity>
+                        ) : (
+                            <View style={[
+                                styles.messageBubble,
+                                isOwn ? styles.ownBubble : styles.otherBubble
+                            ]}>
 
-                            {message.message_type === 'text' && (
+                                {message.message_type === 'text' && (
+                                    <Text style={[
+                                        styles.messageText,
+                                        isOwn ? styles.ownText : styles.otherText
+                                    ]}>
+                                        {message.content}
+                                    </Text>
+                                )}
+
                                 <Text style={[
-                                    styles.messageText,
-                                    isOwn ? styles.ownText : styles.otherText
+                                    styles.messageTime,
+                                    isOwn ? styles.ownTime : styles.otherTime
                                 ]}>
-                                    {message.content}
+                                    {moment(message.created_at).format('HH:mm')}
+                                    {message.is_edited && ' (đã chỉnh sửa)'}
                                 </Text>
-                            )}
+                            </View>
+                        )}
 
+                        {/* Thời gian cho ảnh và video */}
+                        {(message.message_type === 'image' || message.message_type === 'video') && (
                             <Text style={[
                                 styles.messageTime,
-                                isOwn ? styles.ownTime : styles.otherTime
+                                isOwn ? styles.ownTime : styles.otherTime,
+                                { marginTop: hp(0.5) }
                             ]}>
                                 {moment(message.created_at).format('HH:mm')}
                                 {message.is_edited && ' (đã chỉnh sửa)'}
                             </Text>
-                        </View>
+                        )}
                     </View>
                 </View>
             </View>
@@ -421,7 +576,7 @@ const ChatScreen = () => {
                             <TouchableOpacity
                                 style={styles.sendButton}
                                 onPress={sendMessageHandler}
-                                disabled={sending}
+                                disabled={sending || uploading}
                             >
                                 {sending ? (
                                     <Loading size="small" />
@@ -429,23 +584,33 @@ const ChatScreen = () => {
                                     <Icon
                                         name="send"
                                         size={hp(2.2)}
-                                        color={theme.colors.primary}
+                                        color="white"
                                     />
                                 )}
                             </TouchableOpacity>
                         ) : (
                             <View style={styles.inputActions}>
                                 <TouchableOpacity
-                                    style={styles.inputActionButton}
+                                    style={[styles.inputActionButton, uploading && styles.disabledButton]}
                                     onPress={handleImagePicker}
+                                    disabled={uploading}
                                 >
-                                    <Icon name="image" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                    {uploading ? (
+                                        <Loading size="small" />
+                                    ) : (
+                                        <Icon name="image" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                    )}
                                 </TouchableOpacity>
                                 <TouchableOpacity
-                                    style={styles.inputActionButton}
+                                    style={[styles.inputActionButton, uploading && styles.disabledButton]}
                                     onPress={handleVideoPicker}
+                                    disabled={uploading}
                                 >
-                                    <Icon name="video" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                    {uploading ? (
+                                        <Loading size="small" />
+                                    ) : (
+                                        <Icon name="video" size={hp(2.5)} color={theme.colors.textSecondary} />
+                                    )}
                                 </TouchableOpacity>
                             </View>
                         )}
@@ -588,13 +753,35 @@ const styles = StyleSheet.create({
         width: wp(60),
         height: hp(30),
         borderRadius: theme.radius.lg,
-        marginBottom: hp(0.5),
+        backgroundColor: 'transparent',
     },
-    messageVideo: {
+    videoContainer: {
+        position: 'relative',
         width: wp(60),
         height: hp(30),
         borderRadius: theme.radius.lg,
-        marginBottom: hp(0.5),
+        overflow: 'hidden',
+    },
+    messageVideo: {
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'transparent',
+    },
+    playButtonOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderRadius: theme.radius.lg,
+    },
+    playButtonText: {
+        fontSize: 40,
+        color: 'white',
+        fontWeight: 'bold',
     },
     messageTime: {
         fontSize: hp(1.2),
@@ -626,6 +813,9 @@ const styles = StyleSheet.create({
     inputActionButton: {
         padding: wp(2),
         marginRight: wp(1),
+    },
+    disabledButton: {
+        opacity: 0.5,
     },
     textInputContainer: {
         flex: 1,

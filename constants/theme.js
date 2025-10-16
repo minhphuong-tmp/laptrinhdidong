@@ -1,12 +1,12 @@
 export const theme = {
     colors: {
-        // Facebook Blue
-        primary: '#1877F2',
-        primaryDark: '#166FE5',
-        primaryLight: '#42A5F5',
+        // KMA Red
+        primary: '#DC2626',
+        primaryDark: '#B91C1C',
+        primaryLight: '#EF4444',
 
-        // Facebook Colors
-        facebook: '#1877F2',
+        // KMA Colors
+        facebook: '#DC2626',
         messenger: '#0084FF',
 
         // Background Colors
@@ -30,7 +30,12 @@ export const theme = {
         success: '#42B883',
         error: '#F02849',
         warning: '#F7B928',
-        info: '#1877F2',
+        info: '#2563EB',
+
+        // KMA Tech Colors
+        techBlue: '#2563EB',
+        techGreen: '#10B981',
+        techOrange: '#F59E0B',
 
         // Like & Reaction Colors
         like: '#F02849',
