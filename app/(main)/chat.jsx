@@ -24,6 +24,7 @@ import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
+import CallManager from '../../services/callManager';
 import {
     deleteConversation,
     getConversationById,
@@ -46,9 +47,14 @@ const ChatScreen = () => {
     const videoRefs = useRef({});
     const [messageText, setMessageText] = useState('');
     const flatListRef = useRef(null);
+    const [imageLoading, setImageLoading] = useState({});
 
     useEffect(() => {
         if (conversationId) {
+            // Reset states when entering conversation
+            setImageLoading({});
+            setPlayingVideo(null);
+
             loadConversation();
             loadMessages();
             markAsRead();
@@ -97,6 +103,11 @@ const ChatScreen = () => {
                         setMessages(prev => [...prev, messageWithSender]);
                     }
 
+                    // Scroll to bottom for new messages
+                    setTimeout(() => {
+                        flatListRef.current?.scrollToEnd({ animated: true });
+                    }, 200);
+
                     markAsRead();
                 } else {
                     console.log('Ignoring own message (already added)');
@@ -126,6 +137,22 @@ const ChatScreen = () => {
 
         if (res.success) {
             setMessages(res.data);
+
+            // Reset image loading states when loading messages
+            setImageLoading({});
+
+            // Pre-mark images as loaded if they're from cache
+            const imageMessages = res.data.filter(msg => msg.message_type === 'image');
+            const preLoadedImages = {};
+            imageMessages.forEach(msg => {
+                preLoadedImages[msg.id] = false; // Mark as already loaded
+            });
+            setImageLoading(preLoadedImages);
+
+            // Scroll to bottom after loading messages
+            setTimeout(() => {
+                flatListRef.current?.scrollToEnd({ animated: true });
+            }, 300);
         }
     };
 
@@ -137,6 +164,18 @@ const ChatScreen = () => {
                 console.log('Marked as read');
             }
         }
+    };
+
+    const handleImageLoadStart = (messageId) => {
+        // Only show loading if not already loaded
+        setImageLoading(prev => {
+            if (prev[messageId] === false) return prev; // Already loaded
+            return { ...prev, [messageId]: true };
+        });
+    };
+
+    const handleImageLoadEnd = (messageId) => {
+        setImageLoading(prev => ({ ...prev, [messageId]: false }));
     };
 
     const sendMessageHandler = async () => {
@@ -277,10 +316,10 @@ const ChatScreen = () => {
                 };
                 setMessages(prev => [...prev, newMessage]);
 
-                // Scroll to bottom
+                // Scroll to bottom with longer delay for media
                 setTimeout(() => {
                     flatListRef.current?.scrollToEnd({ animated: true });
-                }, 100);
+                }, 500);
             } else {
                 Alert.alert('Lỗi', messageResult.msg || 'Không thể gửi tin nhắn');
             }
@@ -354,6 +393,179 @@ const ChatScreen = () => {
         return otherMember?.user?.image || null;
     };
 
+    const getOtherUserId = () => {
+        if (!conversation) return null;
+
+        if (conversation.type === 'group') {
+            return null; // Group calls not supported yet
+        }
+
+        const otherMember = conversation.conversation_members?.find(
+            member => member.user_id !== user.id
+        );
+        return otherMember?.user_id || null;
+    };
+
+    const handleVoiceCall = async () => {
+        console.log('🔊 handleVoiceCall started - BEFORE TRY');
+        try {
+            console.log('🔊 handleVoiceCall started - INSIDE TRY');
+            const otherUserId = getOtherUserId();
+            console.log('🔊 otherUserId:', otherUserId);
+
+            if (!otherUserId) {
+                console.log('❌ No otherUserId found');
+                Alert.alert('Lỗi', 'Không thể xác định người nhận cuộc gọi');
+                return;
+            }
+
+            console.log('🔊 Starting voice call...');
+            console.log('🔊 CallManager:', CallManager);
+            console.log('🔊 user.id:', user?.id);
+            console.log('🔊 conversationId:', conversationId);
+
+            // Check if CallManager is initialized
+            if (!CallManager.currentUserId) {
+                console.log('❌ CallManager not initialized, initializing now...');
+                try {
+                    const initResult = await CallManager.initialize(user.id, {
+                        onIncomingCall: (call) => {
+                            console.log('📞 Incoming call:', call);
+                        },
+                        onCallEnded: (call) => {
+                            console.log('📞 Call ended:', call);
+                        }
+                    });
+                    console.log('🔊 CallManager init result:', initResult);
+                } catch (initError) {
+                    console.error('❌ CallManager init error:', initError);
+                    Alert.alert('Lỗi', 'Không thể khởi tạo CallManager: ' + initError.message);
+                    return;
+                }
+            }
+
+            console.log('🔊 About to call CallManager.startCall...');
+            const result = await CallManager.startCall(conversationId, otherUserId, 'voice');
+            console.log('🔊 CallManager.startCall result:', result);
+
+            if (result.success) {
+                console.log('✅ CallManager.startCall SUCCESS - Opening call...');
+                try {
+                    if (result.webrtcCall) {
+                        console.log('🔊 Using real WebRTC call screen');
+                        router.push({
+                            pathname: '/realCallScreen',
+                            params: {
+                                conversationId: conversationId,
+                                otherUserId: otherUserId,
+                                callType: 'voice',
+                                isIncoming: false,
+                                callerName: getConversationName(),
+                                callerAvatar: getConversationAvatar()
+                            }
+                        });
+                    } else if (result.webCall) {
+                        console.log('🌐 Using web call screen');
+                        router.push({
+                            pathname: '/webCallScreen',
+                            params: {
+                                conversationId: conversationId,
+                                otherUserId: otherUserId,
+                                callType: 'voice',
+                                isIncoming: false,
+                                callerName: getConversationName(),
+                                callerAvatar: getConversationAvatar()
+                            }
+                        });
+                    } else {
+                        console.log('🔊 Using default call screen');
+                        router.push({
+                            pathname: '/callScreen',
+                            params: {
+                                conversationId: conversationId,
+                                otherUserId: otherUserId,
+                                callType: 'voice',
+                                isIncoming: false,
+                                callerName: getConversationName(),
+                                callerAvatar: getConversationAvatar()
+                            }
+                        });
+                    }
+                } catch (navigationError) {
+                    console.error('❌ Navigation error:', navigationError);
+                    Alert.alert('Lỗi', 'Không thể mở màn hình gọi điện');
+                }
+            } else {
+                console.error('❌ CallManager.startCall FAILED:', result.error);
+                Alert.alert('Lỗi', result.error || 'Không thể bắt đầu cuộc gọi');
+            }
+        } catch (error) {
+            console.error('❌ Voice call error:', error);
+            console.error('❌ Error stack:', error.stack);
+            console.error('❌ Error details:', {
+                message: error.message,
+                name: error.name,
+                code: error.code
+            });
+            Alert.alert('Lỗi chi tiết', `Lỗi: ${error.message}\nTên: ${error.name}\nCode: ${error.code}`);
+        }
+    };
+
+    const handleVideoCall = async () => {
+        try {
+            const otherUserId = getOtherUserId();
+            if (!otherUserId) {
+                Alert.alert('Lỗi', 'Không thể xác định người nhận cuộc gọi');
+                return;
+            }
+
+            console.log('📹 Starting video call...');
+            const result = await CallManager.startCall(conversationId, otherUserId, 'video');
+
+            if (result.success) {
+                console.log('✅ CallManager.startCall SUCCESS - Opening call...');
+                try {
+                    if (result.webrtcCall) {
+                        console.log('📹 Using real WebRTC call screen');
+                        router.push({
+                            pathname: '/realCallScreen',
+                            params: {
+                                conversationId: conversationId,
+                                otherUserId: otherUserId,
+                                callType: 'video',
+                                isIncoming: false,
+                                callerName: getConversationName(),
+                                callerAvatar: getConversationAvatar()
+                            }
+                        });
+                    } else {
+                        console.log('🌐 Using web call screen');
+                        router.push({
+                            pathname: '/webCallScreen',
+                            params: {
+                                conversationId: conversationId,
+                                otherUserId: otherUserId,
+                                callType: 'video',
+                                isIncoming: false,
+                                callerName: getConversationName(),
+                                callerAvatar: getConversationAvatar()
+                            }
+                        });
+                    }
+                } catch (navigationError) {
+                    console.error('❌ Navigation error:', navigationError);
+                    Alert.alert('Lỗi', 'Không thể mở màn hình gọi video');
+                }
+            } else {
+                console.error('❌ CallManager.startCall FAILED:', result.error);
+                Alert.alert('Lỗi', result.error || 'Không thể bắt đầu cuộc gọi video');
+            }
+        } catch (error) {
+            console.error('❌ Video call error:', error);
+            Alert.alert('Lỗi', 'Có lỗi xảy ra khi bắt đầu cuộc gọi video');
+        }
+    };
+
     const renderMessage = ({ item: message }) => {
         const isOwn = message.sender_id === user.id;
         const isGroup = conversation?.type === 'group';
@@ -381,18 +593,28 @@ const ChatScreen = () => {
                         isOwn ? styles.ownBubbleWrapper : styles.otherBubbleWrapper
                     ]}>
                         {message.message_type === 'image' ? (
-                            <Image
-                                source={{ uri: message.file_url }}
-                                style={styles.messageImage}
-                                resizeMode="cover"
-                                onError={(error) => {
-                                    console.log('Image load error:', error);
-                                    console.log('Image URL:', message.file_url);
-                                }}
-                                onLoad={() => {
-                                    console.log('Image loaded successfully:', message.file_url);
-                                }}
-                            />
+                            <View style={styles.imageContainer}>
+                                {imageLoading[message.id] && (
+                                    <View style={styles.imageLoadingOverlay}>
+                                        <Loading size="small" />
+                                    </View>
+                                )}
+                                <Image
+                                    source={{ uri: message.file_url }}
+                                    style={styles.messageImage}
+                                    resizeMode="cover"
+                                    onLoadStart={() => handleImageLoadStart(message.id)}
+                                    onLoad={() => {
+                                        handleImageLoadEnd(message.id);
+                                        console.log('Image loaded successfully:', message.file_url);
+                                    }}
+                                    onError={(error) => {
+                                        handleImageLoadEnd(message.id);
+                                        console.log('Image load error:', error);
+                                        console.log('Image URL:', message.file_url);
+                                    }}
+                                />
+                            </View>
                         ) : message.message_type === 'video' ? (
                             <TouchableOpacity
                                 style={styles.videoContainer}
@@ -532,14 +754,17 @@ const ChatScreen = () => {
                     </TouchableOpacity>
 
                     <View style={styles.headerActions}>
-                        <TouchableOpacity style={styles.headerActionButton}>
-                            <Icon name="video" size={hp(2.5)} color={theme.colors.text} />
+                        <TouchableOpacity
+                            style={[styles.headerActionButton, styles.callButton]}
+                            onPress={handleVoiceCall}
+                        >
+                            <Icon name="call" size={hp(2.5)} color={theme.colors.primary} />
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.headerActionButton}>
-                            <Icon name="phone" size={hp(2.5)} color={theme.colors.text} />
-                        </TouchableOpacity>
-                        <TouchableOpacity style={styles.headerActionButton}>
-                            <Icon name="threeDotsHorizontal" size={hp(2.5)} color={theme.colors.text} />
+                        <TouchableOpacity
+                            style={[styles.headerActionButton, styles.videoCallButton]}
+                            onPress={handleVideoCall}
+                        >
+                            <Icon name="video" size={hp(2.5)} color={theme.colors.primary} />
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -554,7 +779,12 @@ const ChatScreen = () => {
                     contentContainerStyle={styles.messagesContainer}
                     showsVerticalScrollIndicator={false}
                     keyboardShouldPersistTaps="handled"
-                    onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                    onContentSizeChange={() => {
+                        // Delay scroll for media messages
+                        setTimeout(() => {
+                            flatListRef.current?.scrollToEnd({ animated: true });
+                        }, 100);
+                    }}
                 />
 
                 {/* Messenger Input */}
@@ -676,6 +906,18 @@ const styles = StyleSheet.create({
         padding: wp(2),
         marginLeft: wp(1),
     },
+    callButton: {
+        backgroundColor: theme.colors.primary + '15', // 15% opacity
+        borderRadius: theme.radius.full,
+        padding: wp(2.5),
+        marginLeft: wp(2),
+    },
+    videoCallButton: {
+        backgroundColor: theme.colors.primary + '15', // 15% opacity
+        borderRadius: theme.radius.full,
+        padding: wp(2.5),
+        marginLeft: wp(1),
+    },
 
     // Messages
     messagesList: {
@@ -749,11 +991,29 @@ const styles = StyleSheet.create({
     otherText: {
         color: theme.colors.text,
     },
-    messageImage: {
+    imageContainer: {
+        position: 'relative',
         width: wp(60),
         height: hp(30),
         borderRadius: theme.radius.lg,
+    },
+    messageImage: {
+        width: '100%',
+        height: '100%',
+        borderRadius: theme.radius.lg,
         backgroundColor: 'transparent',
+    },
+    imageLoadingOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.1)',
+        borderRadius: theme.radius.lg,
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 1,
     },
     videoContainer: {
         position: 'relative',

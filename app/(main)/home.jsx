@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+    Animated,
     FlatList,
     Image,
     Modal,
@@ -13,10 +14,12 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
+import IncomingCallModal from '../../components/IncomingCallModal';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
+import CallManager from '../../services/callManager';
 import { fetchPost } from '../../services/postService';
 
 import Icon from '../../assets/icons';
@@ -40,7 +43,28 @@ const Home = () => {
     const [showMenu, setShowMenu] = useState(false);
     const [showCreatePost, setShowCreatePost] = useState(false);
     const [postContent, setPostContent] = useState('');
+    const [incomingCall, setIncomingCall] = useState(null);
+    const [showIncomingCall, setShowIncomingCall] = useState(false);
     const subscriptionsRef = useRef({}); // Track subscriptions
+    const slideAnim = useRef(new Animated.Value(wp(80))).current; // Bắt đầu từ ngoài màn hình
+
+    // Animate menu slide
+    useEffect(() => {
+        if (showMenu) {
+            Animated.timing(slideAnim, {
+                toValue: 0,
+                duration: 300,
+                useNativeDriver: true,
+            }).start();
+        } else {
+            Animated.timing(slideAnim, {
+                toValue: wp(80),
+                duration: 300,
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [showMenu]);
+
     const onLogout = async () => {
         try {
             const { error } = await supabase.auth.signOut();
@@ -57,6 +81,40 @@ const Home = () => {
     const handleCreatePost = async () => {
         // Chỉ chuyển hướng sang trang tạo bài viết
         router.push('newPost');
+    };
+
+    // Handle incoming call
+    const handleAnswerCall = async () => {
+        if (!incomingCall) return;
+
+        try {
+            setShowIncomingCall(false);
+            router.push({
+                pathname: '/callScreen',
+                params: {
+                    callType: incomingCall.call_type,
+                    callId: incomingCall.id,
+                    conversationId: incomingCall.conversation_id,
+                    isIncoming: true,
+                    callerName: incomingCall.caller?.name || 'Unknown',
+                    callerAvatar: incomingCall.caller?.image
+                }
+            });
+        } catch (error) {
+            console.error('Answer call error:', error);
+        }
+    };
+
+    const handleDeclineCall = async () => {
+        if (!incomingCall) return;
+
+        try {
+            await CallManager.declineCall(incomingCall.id);
+            setShowIncomingCall(false);
+            setIncomingCall(null);
+        } catch (error) {
+            console.error('Decline call error:', error);
+        }
     };
 
     const handlePostEvent = async (payload) => {
@@ -129,6 +187,36 @@ const Home = () => {
             });
         }
     };
+
+    // Initialize CallManager
+    useEffect(() => {
+        if (!user?.id) return;
+
+        const initializeCallManager = async () => {
+            try {
+                await CallManager.initialize(user.id, {
+                    onIncomingCall: (callData) => {
+                        console.log('Incoming call:', callData);
+                        setIncomingCall(callData);
+                        setShowIncomingCall(true);
+                    },
+                    onCallEnded: (callData) => {
+                        console.log('Call ended:', callData);
+                        setShowIncomingCall(false);
+                        setIncomingCall(null);
+                    }
+                });
+            } catch (error) {
+                console.error('CallManager initialization error:', error);
+            }
+        };
+
+        initializeCallManager();
+
+        return () => {
+            CallManager.destroy();
+        };
+    }, [user?.id]);
 
     useEffect(() => {
         if (!user?.id) return; // Chỉ setup khi có user
@@ -319,14 +407,14 @@ const Home = () => {
             <Modal
                 visible={showMenu}
                 transparent={true}
-                animationType="slide"
+                animationType="fade"
                 onRequestClose={() => setShowMenu(false)}
             >
                 <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
                     <SafeAreaView style={styles.menuOverlay}>
                         <View style={styles.menuBackdrop} />
                         <TouchableWithoutFeedback onPress={() => { }}>
-                            <View style={styles.menuContainer}>
+                            <Animated.View style={[styles.menuContainer, { transform: [{ translateX: slideAnim }] }]}>
                                 {/* Menu Header */}
                                 <View style={styles.menuHeader}>
                                     <View style={styles.menuUserInfo}>
@@ -413,7 +501,7 @@ const Home = () => {
                                         <Text style={[styles.menuItemText, styles.logoutText]}>Đăng xuất</Text>
                                     </TouchableOpacity>
                                 </View>
-                            </View>
+                            </Animated.View>
                         </TouchableWithoutFeedback>
                     </SafeAreaView>
                 </TouchableWithoutFeedback>
@@ -469,6 +557,14 @@ const Home = () => {
                     </View>
                 </View>
             </Modal>
+
+            {/* Incoming Call Modal */}
+            <IncomingCallModal
+                visible={showIncomingCall}
+                callData={incomingCall}
+                onAnswer={handleAnswerCall}
+                onDecline={handleDeclineCall}
+            />
 
         </SafeAreaView>
     )
@@ -1093,6 +1189,7 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.5)',
         justifyContent: 'flex-start',
+        alignItems: 'flex-end', // Đẩy menu về phía phải
         paddingTop: 0, // Để SafeAreaView handle
     },
 

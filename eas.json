@@ -1,0 +1,39 @@
+{
+  "cli": {
+    "version": ">= 16.23.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug --info --stacktrace --debug"
+      },
+      "env": {
+        "EAS_SKIP_AUTO_FINGERPRINT": "1"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease --info --stacktrace --debug"
+      },
+      "env": {
+        "EXPO_DEBUG": "1",
+        "EAS_SKIP_AUTO_FINGERPRINT": "1"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

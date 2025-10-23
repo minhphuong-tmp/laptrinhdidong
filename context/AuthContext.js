@@ -52,8 +52,8 @@ export const AuthProvider = ({ children }) => {
                     console.log('User signed out');
                     setUser(null);
                     setLoading(false);
-                    // Redirect về login
-                    router.replace('/login');
+                    // Redirect về welcome thay vì login để tránh vòng lặp
+                    router.replace('/welcome');
                 } else if (event === 'SIGNED_IN' && session?.user) {
                     console.log('User signed in:', session.user.email);
                     setUser(session.user);

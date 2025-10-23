@@ -186,7 +186,6 @@ const ChatList = () => {
         });
 
         // Debug unread count
-        console.log('Unread count:', unreadMessages.length, 'for conversation:', conversation.id);
 
         return unreadMessages.length;
     };

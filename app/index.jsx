@@ -15,6 +15,7 @@ if (typeof global !== 'undefined' && typeof global.localStorage === 'undefined')
 }
 
 import Loading from '@/components/Loading.jsx';
+import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { View } from 'react-native';
@@ -22,20 +23,22 @@ import { View } from 'react-native';
 const index = () => {
   console.log('Index component rendering...');
   const router = useRouter();
+  const { user, loading } = useAuth();
 
-  // Đơn giản hóa: chỉ navigate đến welcome sau 1 giây
   React.useEffect(() => {
     console.log('Index useEffect running...');
-    const timer = setTimeout(() => {
-      console.log('Navigating to welcome...');
-      router.replace('/welcome');
-    }, 1000);
+    console.log('Auth state:', { user: !!user, loading });
 
-    return () => {
-      console.log('Index cleanup...');
-      clearTimeout(timer);
-    };
-  }, []);
+    if (!loading) {
+      if (user) {
+        console.log('User already logged in, navigating to home...');
+        router.replace('/(main)/home');
+      } else {
+        console.log('No user, navigating to welcome...');
+        router.replace('/welcome');
+      }
+    }
+  }, [user, loading]);
 
   return (
     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>

@@ -1,4 +1,5 @@
 import '../globalPolyfills.js';
+import '../utils/webrtcPolyfill.js'; // WebRTC polyfills
 
 import 'react-native-url-polyfill/auto'; // Dòng này phải ở đầu tiên
 
