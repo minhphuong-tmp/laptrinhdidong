@@ -33,6 +33,7 @@ import {
     sendMessage,
     uploadMediaFile
 } from '../../services/chatService';
+import performanceMetrics from '../../utils/performanceMetrics';
 
 const ChatScreen = () => {
     const { conversationId } = useLocalSearchParams();
@@ -48,6 +49,23 @@ const ChatScreen = () => {
     const [messageText, setMessageText] = useState('');
     const flatListRef = useRef(null);
     const [imageLoading, setImageLoading] = useState({});
+    const loadTimeRef = useRef(null);
+    const logHasRun = useRef(false);
+    const messageLoadLogHasRun = useRef(false);
+    const initialMessageCount = useRef(null);
+    const loadedImageIds = useRef(new Set());
+    const loadedVideoIds = useRef(new Set());
+    const imagesToLoad = useRef(new Set());
+    const videosToLoad = useRef(new Set());
+    const imageLoadTimes = useRef([]); // Lưu thời gian load từng ảnh
+    const videoLoadTimes = useRef([]); // Lưu thời gian load từng video
+
+    // === Thời gian load toàn màn chat (from mount to load xong list) ===
+    useEffect(() => {
+        if (messages.length > 0 && !loading && loadTimeRef.current && !messageLoadLogHasRun.current) {
+            messageLoadLogHasRun.current = true;
+        }
+    }, [messages, loading]);
 
     useEffect(() => {
         if (conversationId) {
@@ -123,6 +141,77 @@ const ChatScreen = () => {
         };
     }, [conversationId]);
 
+    useEffect(() => {
+        if (conversationId) {
+            loadTimeRef.current = Date.now();
+            logHasRun.current = false;
+            messageLoadLogHasRun.current = false;
+            initialMessageCount.current = null;
+            loadedImageIds.current = new Set(); // Reset khi vào chat mới
+            loadedVideoIds.current = new Set();
+            imagesToLoad.current = new Set();
+            videosToLoad.current = new Set();
+            imageLoadTimes.current = [];
+            videoLoadTimes.current = [];
+
+            // Reset performance metrics khi vào chat mới
+            performanceMetrics.reset();
+            performanceMetrics.trackRender('ChatScreen-Mount');
+
+            console.log('========================= BẮT ĐẦU ĐO TỐC ĐỘ CHAT =================================================');
+        }
+    }, [conversationId]);
+
+    // Ghi nhận message đầu tiên để xác định phải chờ bao nhiêu media
+    useEffect(() => {
+        if (
+            messages.length > 0 &&
+            !loading &&
+            initialMessageCount.current === null &&
+            !logHasRun.current
+        ) {
+            // Lấy danh sách id media phải chờ (lần đầu render)
+            imagesToLoad.current = new Set(messages.filter(msg => msg.message_type === 'image').map(msg => msg.id));
+            videosToLoad.current = new Set(messages.filter(msg => msg.message_type === 'video').map(msg => msg.id));
+            initialMessageCount.current = messages.length;
+        }
+    }, [messages, loading, conversationId]);
+
+    function checkAllMediaLoadedAndLog() {
+        // DEBUG trạng thái snapshot mỗi lần gọi
+
+        const imagesDone = Array.from(imagesToLoad.current).every(id => loadedImageIds.current.has(id));
+        const videosDone = Array.from(videosToLoad.current).every(id => loadedVideoIds.current.has(id));
+        // DEBUG log điều kiện trigger block tổng
+
+        if (
+            loadTimeRef.current &&
+            initialMessageCount.current !== null &&
+            imagesDone &&
+            videosDone &&
+            !logHasRun.current
+        ) {
+            const end = Date.now();
+            const totalTime = end - loadTimeRef.current;
+            const avgImageTime = imagesToLoad.current.size > 0
+                ? Array.from(loadedImageIds.current).length * 100 / imagesToLoad.current.size // Estimate
+                : 0;
+
+            console.log('=========== CHỈ SỐ HIỆU NĂNG CHAT ===========');
+            console.log('⏱️ Tổng thời gian load (messages + media):', totalTime, 'ms');
+            console.log('📊 Số messages:', initialMessageCount.current);
+            console.log('📊 Số ảnh:', imagesToLoad.current.size);
+            console.log('📊 Số video:', videosToLoad.current.size);
+            if (totalTime > 0 && initialMessageCount.current > 0) {
+                console.log('📊 Trung bình thời gian/message:', (totalTime / initialMessageCount.current).toFixed(2), 'ms');
+            }
+            console.log('=========== KẾT THÚC ĐO TỐC ĐỘ CHAT ===========');
+
+            loadTimeRef.current = null;
+            logHasRun.current = true;
+        }
+    }
+
     const loadConversation = async () => {
         const res = await getConversationById(conversationId);
         if (res.success) {
@@ -132,17 +221,24 @@ const ChatScreen = () => {
 
     const loadMessages = async () => {
         setLoading(true);
+        performanceMetrics.trackRender('ChatScreen-LoadMessages');
+
         const res = await getMessages(conversationId);
         setLoading(false);
 
         if (res.success) {
+            // === METRICS: Track network data ===
+            const estimatedSize = res.data.length * 500;
+            performanceMetrics.trackNetworkRequest(estimatedSize, 'download');
+
             setMessages(res.data);
+            performanceMetrics.trackRender('ChatScreen-SetMessages');
 
             // Reset image loading states when loading messages
             setImageLoading({});
 
             // Pre-mark images as loaded if they're from cache
-            const imageMessages = res.data.filter(msg => msg.message_type === 'image');
+            const imageMessages = messages.filter(msg => msg.message_type === 'image');
             const preLoadedImages = {};
             imageMessages.forEach(msg => {
                 preLoadedImages[msg.id] = false; // Mark as already loaded
@@ -161,7 +257,6 @@ const ChatScreen = () => {
         if (user?.id) {
             const result = await markConversationAsRead(conversationId, user.id);
             if (result.success) {
-                console.log('Marked as read');
             }
         }
     };
@@ -276,6 +371,7 @@ const ChatScreen = () => {
         if (!file || uploading) return;
 
         setUploading(true);
+        performanceMetrics.trackRender('ChatScreen-UploadStart');
         console.log('Sending', type, 'message...');
 
         try {
@@ -293,6 +389,12 @@ const ChatScreen = () => {
                 return;
             }
 
+            // === METRICS: Track upload network ===
+            if (uploadResult.metrics) {
+                const metrics = uploadResult.metrics;
+                performanceMetrics.trackNetworkRequest(metrics.steps.arrayBufferSize, 'upload');
+            }
+
             // Gửi tin nhắn với file_url
             const messageResult = await sendMessage({
                 conversation_id: conversationId,
@@ -304,6 +406,7 @@ const ChatScreen = () => {
 
             if (messageResult.success) {
                 console.log('Media message sent successfully');
+                performanceMetrics.trackRender('ChatScreen-UploadSuccess');
 
                 // Thêm tin nhắn vào danh sách ngay lập tức
                 const newMessage = {
@@ -315,6 +418,7 @@ const ChatScreen = () => {
                     }
                 };
                 setMessages(prev => [...prev, newMessage]);
+                performanceMetrics.trackRender('ChatScreen-AddMessage');
 
                 // Scroll to bottom with longer delay for media
                 setTimeout(() => {
@@ -567,8 +671,15 @@ const ChatScreen = () => {
     };
 
     const renderMessage = ({ item: message }) => {
+        // Track render performance
+        performanceMetrics.trackRender(`Message-${message.id}`);
+
         const isOwn = message.sender_id === user.id;
         const isGroup = conversation?.type === 'group';
+
+        // === Đo thời gian tải ẢNH & VIDEO từng cái ===
+        let imageLoadStart = null;
+        let videoLoadStart = null;
 
         return (
             <View style={[
@@ -603,15 +714,28 @@ const ChatScreen = () => {
                                     source={{ uri: message.file_url }}
                                     style={styles.messageImage}
                                     resizeMode="cover"
-                                    onLoadStart={() => handleImageLoadStart(message.id)}
+                                    onLoadStart={() => {
+                                        handleImageLoadStart(message.id);
+                                        imageLoadStart = Date.now();
+                                    }}
                                     onLoad={() => {
                                         handleImageLoadEnd(message.id);
-                                        console.log('Image loaded successfully:', message.file_url);
+                                        const loaded = Date.now();
+                                        if (!loadedImageIds.current.has(message.id) && imageLoadStart) {
+                                            const loadTime = loaded - imageLoadStart;
+                                            loadedImageIds.current.add(message.id);
+                                            // Lưu thời gian load thay vì log ngay
+                                            imageLoadTimes.current.push({ id: message.id, time: loadTime });
+                                            checkAllMediaLoadedAndLog();
+                                        }
                                     }}
                                     onError={(error) => {
                                         handleImageLoadEnd(message.id);
-                                        console.log('Image load error:', error);
-                                        console.log('Image URL:', message.file_url);
+                                        if (!loadedImageIds.current.has(message.id)) {
+                                            loadedImageIds.current.add(message.id);
+
+                                            checkAllMediaLoadedAndLog();
+                                        }
                                     }}
                                 />
                             </View>
@@ -639,7 +763,6 @@ const ChatScreen = () => {
                                     ref={(ref) => {
                                         if (ref) {
                                             videoRefs.current[message.id] = ref;
-                                            console.log('Video ref set for:', message.id);
                                         }
                                     }}
                                     source={{ uri: message.file_url }}
@@ -648,17 +771,22 @@ const ChatScreen = () => {
                                     resizeMode="cover"
                                     shouldPlay={playingVideo === message.id}
                                     onPlaybackStatusUpdate={(status) => {
-                                        console.log('Video status:', status.isPlaying, 'for video:', message.id);
                                     }}
                                     isLooping={false}
                                     onError={(error) => {
-                                        console.log('Video load error:', error);
-                                        console.log('Video URL:', message.file_url);
+                                    }}
+                                    onLoadStart={() => {
+                                        videoLoadStart = Date.now();
                                     }}
                                     onLoad={() => {
-                                        console.log('Video loaded successfully:', message.file_url);
-                                        console.log('Video message type:', message.message_type);
-                                        console.log('Video file_url exists:', !!message.file_url);
+                                        const loaded = Date.now();
+                                        if (!loadedVideoIds.current.has(message.id) && videoLoadStart) {
+                                            const loadTime = loaded - videoLoadStart;
+                                            loadedVideoIds.current.add(message.id);
+                                            // Lưu thời gian load thay vì log ngay
+                                            videoLoadTimes.current.push({ id: message.id, time: loadTime });
+                                            checkAllMediaLoadedAndLog();
+                                        }
                                     }}
                                 />
                                 {playingVideo !== message.id && (

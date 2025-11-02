@@ -1,6 +1,11 @@
 import { theme } from '../../constants/theme';
+import Activity from './Activity';
+import Alarm from './Alarm';
 import ArrowLeft from './ArrowLeft';
+import Award from './Award';
+import Bell from './Bell';
 import Bio from './Bio';
+import Calendar from './Calendar';
 import Call from './Call';
 import Camera from './Camera';
 import Chat from './Chat';
@@ -8,7 +13,9 @@ import Check from './Check';
 import Close from './Close';
 import Comment from './Comment';
 import Delete from './Delete';
+import DollarSign from './DollarSign';
 import Edit from './Edit';
+import FileText from './FileText';
 import Heart from './Heart';
 import Home from './Home';
 import Image from './Image';
@@ -16,15 +23,24 @@ import Location from './Location';
 import Lock from './Lock';
 import Logout from './logout';
 import Mail from './Mail';
+import Megaphone from './Megaphone';
+import MessageCircle from './MessageCircle';
+import NotificationBadge from './NotificationBadge';
+import Phone from './Phone';
 import Plus from './Plus';
+import Refresh from './Refresh';
 import Search from './Search';
 import Send from './Send';
+import Settings from './Settings';
 import Share from './Share';
 import Stats from './Stats';
 import ThreeDotsCircle from './ThreeDotsCircle';
 import ThreeDotsHorizontal from './ThreeDotsHorizontal';
 import Todo from './Todo';
 import User from './User';
+import UserCheck from './UserCheck';
+import UserPlus from './UserPlus';
+import Users from './Users';
 import Video from './Video';
 const icons = {
   bio: Bio,
@@ -49,12 +65,31 @@ const icons = {
   comment: Comment,
   share: Share,
   send: Send,
-  delete: Delete,
   logout: Logout,
   image: Image,
   video: Video,
   stats: Stats,
   todo: Todo,
+  // New menu icons
+  users: Users,
+  activity: Activity,
+  'file-text': FileText,
+  bell: Bell,
+  calendar: Calendar,
+  award: Award,
+  'dollar-sign': DollarSign,
+  phone: Phone,
+  // Notification badge
+  'notification-badge': NotificationBadge,
+  // Additional icons
+  'arrow-left': ArrowLeft,
+  megaphone: Megaphone,
+  alarm: Alarm,
+  refresh: Refresh,
+  'user-check': UserCheck,
+  'settings': Settings,
+  'message-circle': MessageCircle,
+  'user-plus': UserPlus,
 }
 
 const Icon = ({ name, ...props }) => {

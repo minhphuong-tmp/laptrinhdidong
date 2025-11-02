@@ -2,6 +2,13 @@ import { supabase } from "../lib/supabase";
 
 // ===== MEDIA UPLOAD =====
 export const uploadMediaFile = async (file, type = 'image') => {
+    const uploadMetrics = {
+        startTime: Date.now(),
+        fileSize: file.fileSize || 0,
+        type: type,
+        steps: {}
+    };
+
     try {
         // Tạo tên file unique
         const fileExt = file.uri.split('.').pop();
@@ -15,14 +22,31 @@ export const uploadMediaFile = async (file, type = 'image') => {
         const FileSystem = require('expo-file-system');
         const { decode } = require('base64-arraybuffer');
 
+        // === METRICS: Đo thời gian đọc file ===
+        const readStartTime = Date.now();
         const fileBase64 = await FileSystem.readAsStringAsync(file.uri, {
             encoding: FileSystem.EncodingType.Base64,
         });
+        uploadMetrics.steps.readFileTime = Date.now() - readStartTime;
+        uploadMetrics.steps.base64Size = fileBase64.length;
+
+        // === METRICS: Đo thời gian decode ===
+        const decodeStartTime = Date.now();
         const fileData = decode(fileBase64); // array buffer
+        uploadMetrics.steps.decodeTime = Date.now() - decodeStartTime;
+        uploadMetrics.steps.arrayBufferSize = fileData.byteLength;
+        uploadMetrics.memoryOverhead = fileData.byteLength - uploadMetrics.fileSize;
 
-        console.log('Starting upload for:', type, 'File size:', file.fileSize, 'Data size:', fileData.byteLength);
+        console.log('📊 [Upload Metrics] Starting upload for:', type);
+        console.log('📊 [Upload Metrics] Original file size:', (uploadMetrics.fileSize / 1024 / 1024).toFixed(2), 'MB');
+        console.log('📊 [Upload Metrics] Base64 size:', (uploadMetrics.steps.base64Size / 1024 / 1024).toFixed(2), 'MB');
+        console.log('📊 [Upload Metrics] ArrayBuffer size:', (uploadMetrics.steps.arrayBufferSize / 1024 / 1024).toFixed(2), 'MB');
+        console.log('📊 [Upload Metrics] Memory overhead:', (uploadMetrics.memoryOverhead / 1024 / 1024).toFixed(2), 'MB');
+        console.log('📊 [Upload Metrics] Read file time:', uploadMetrics.steps.readFileTime, 'ms');
+        console.log('📊 [Upload Metrics] Decode time:', uploadMetrics.steps.decodeTime, 'ms');
 
-        // Upload bằng Supabase client (theo cách imageService.js)
+        // === METRICS: Đo thời gian upload ===
+        const uploadStartTime = Date.now();
         const { data, error } = await supabase.storage
             .from('media')
             .upload(filePath, fileData, {
@@ -30,13 +54,15 @@ export const uploadMediaFile = async (file, type = 'image') => {
                 upsert: false,
                 contentType: type === 'image' ? 'image/*' : 'video/*'
             });
+        uploadMetrics.steps.uploadTime = Date.now() - uploadStartTime;
 
         if (error) {
             console.log('Upload error:', error);
-            return { success: false, msg: `Upload failed: ${error.message}` };
+            uploadMetrics.endTime = Date.now();
+            uploadMetrics.totalTime = uploadMetrics.endTime - uploadMetrics.startTime;
+            console.log('📊 [Upload Metrics] Total failed time:', uploadMetrics.totalTime, 'ms');
+            return { success: false, msg: `Upload failed: ${error.message}`, metrics: uploadMetrics };
         }
-
-        console.log('Upload success:', data);
 
         // Lấy public URL
         const { data: urlData } = supabase.storage
@@ -45,11 +71,14 @@ export const uploadMediaFile = async (file, type = 'image') => {
 
         const publicUrl = urlData.publicUrl;
 
-        console.log('Upload successful:', {
-            filePath: filePath,
-            publicUrl: publicUrl,
-            fileName: fileName
-        });
+        uploadMetrics.endTime = Date.now();
+        uploadMetrics.totalTime = uploadMetrics.endTime - uploadMetrics.startTime;
+        uploadMetrics.uploadSpeed = uploadMetrics.steps.arrayBufferSize / (uploadMetrics.steps.uploadTime / 1000); // bytes/second
+
+        console.log('📊 [Upload Metrics] Upload time:', uploadMetrics.steps.uploadTime, 'ms');
+        console.log('📊 [Upload Metrics] Upload speed:', (uploadMetrics.uploadSpeed / 1024 / 1024).toFixed(2), 'MB/s');
+        console.log('📊 [Upload Metrics] Total time:', uploadMetrics.totalTime, 'ms');
+        console.log('=========== KẾT THÚC ĐO METRICS UPLOAD ===========');
 
         return {
             success: true,
@@ -59,11 +88,16 @@ export const uploadMediaFile = async (file, type = 'image') => {
                 file_name: fileName,
                 file_size: file.fileSize || 0,
                 mime_type: file.mimeType || (type === 'image' ? 'image/jpeg' : 'video/mp4')
-            }
+            },
+            metrics: uploadMetrics
         };
     } catch (error) {
         console.log('Upload media error:', error);
-        return { success: false, msg: 'Không thể upload file' };
+        uploadMetrics.endTime = Date.now();
+        uploadMetrics.totalTime = uploadMetrics.endTime - uploadMetrics.startTime;
+        uploadMetrics.error = error.message;
+        console.log('📊 [Upload Metrics] Error - Total time:', uploadMetrics.totalTime, 'ms');
+        return { success: false, msg: 'Không thể upload file', metrics: uploadMetrics };
     }
 };
 
@@ -88,8 +122,35 @@ export const createConversation = async (data) => {
     }
 };
 
-export const getConversations = async (userId) => {
+export const getConversations = async (userId, options = {}) => {
+    const { logMetrics = true } = options; // Default: log metrics
+    const metrics = {
+        startTime: Date.now(),
+        steps: {},
+        queries: {
+            initial: 0,
+            lastMessages: 0,
+            allMessages: 0,
+            members: 0,
+            total: 0
+        },
+        data: {
+            conversationsCount: 0,
+            totalMessagesLoaded: 0,
+            totalMembersLoaded: 0,
+            dataTransfer: {
+                initialQuery: 0,      // bytes
+                lastMessages: 0,      // bytes
+                allMessages: 0,       // bytes
+                members: 0,           // bytes
+                total: 0              // bytes
+            }
+        }
+    };
+
     try {
+        // === BƯỚC 1: Query conversation_members ban đầu ===
+        const step1Start = Date.now();
         const { data, error } = await supabase
             .from('conversation_members')
             .select(`
@@ -105,16 +166,31 @@ export const getConversations = async (userId) => {
                 )
             `)
             .eq('user_id', userId);
+        metrics.steps.initialQuery = Date.now() - step1Start;
+        metrics.queries.initial = 1;
 
         if (error) {
             console.log('getConversations error:', error);
-            return { success: false, msg: 'Không thể lấy danh sách cuộc trò chuyện' };
+            return { success: false, msg: 'Không thể lấy danh sách cuộc trò chuyện', metrics };
         }
 
-        // Lấy tin nhắn cuối và thông tin thành viên cho mỗi conversation
+        metrics.data.conversationsCount = data.length;
+        // Estimate: mỗi conversation member ~200 bytes, với nested conversation ~300 bytes
+        metrics.data.dataTransfer.initialQuery = JSON.stringify(data).length;
+
+        // === BƯỚC 2: Promise.all cho tất cả conversations ===
+        const step2Start = Date.now();
         const conversationsWithMessages = await Promise.all(
             data.map(async (item) => {
-                // Lấy tin nhắn cuối để hiển thị preview
+                const convMetrics = {
+                    lastMessageTime: 0,
+                    allMessagesTime: 0,
+                    membersTime: 0,
+                    messagesCount: 0
+                };
+
+                // === Lấy tin nhắn cuối ===
+                const lastMsgStart = Date.now();
                 const { data: lastMessage } = await supabase
                     .from('messages')
                     .select(`
@@ -130,8 +206,15 @@ export const getConversations = async (userId) => {
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .single();
+                convMetrics.lastMessageTime = Date.now() - lastMsgStart;
+                metrics.queries.lastMessages++;
+                // Estimate: mỗi lastMessage với sender info ~250 bytes
+                if (lastMessage) {
+                    metrics.data.dataTransfer.lastMessages += JSON.stringify(lastMessage).length;
+                }
 
-                // Lấy TẤT CẢ tin nhắn để tính unread count chính xác
+                // === Lấy TẤT CẢ tin nhắn để tính unread count ===
+                const allMsgStart = Date.now();
                 const { data: allMessages } = await supabase
                     .from('messages')
                     .select(`
@@ -141,8 +224,17 @@ export const getConversations = async (userId) => {
                     `)
                     .eq('conversation_id', item.conversation_id)
                     .order('created_at', { ascending: false });
+                convMetrics.allMessagesTime = Date.now() - allMsgStart;
+                convMetrics.messagesCount = allMessages?.length || 0;
+                metrics.queries.allMessages++;
+                metrics.data.totalMessagesLoaded += convMetrics.messagesCount;
+                // Estimate: mỗi message trong allMessages ~100 bytes (id, created_at, sender_id)
+                if (allMessages) {
+                    metrics.data.dataTransfer.allMessages += JSON.stringify(allMessages).length;
+                }
 
-                // Lấy thông tin tất cả thành viên của conversation
+                // === Lấy thông tin thành viên ===
+                const membersStart = Date.now();
                 const { data: members } = await supabase
                     .from('conversation_members')
                     .select(`
@@ -152,25 +244,89 @@ export const getConversations = async (userId) => {
                         user:users(id, name, image)
                     `)
                     .eq('conversation_id', item.conversation_id);
+                convMetrics.membersTime = Date.now() - membersStart;
+                metrics.queries.members++;
+                metrics.data.totalMembersLoaded += members?.length || 0;
+                // Estimate: mỗi member với user info ~150 bytes
+                if (members) {
+                    metrics.data.dataTransfer.members += JSON.stringify(members).length;
+                }
 
                 return {
                     ...item.conversation,
                     conversation_members: members || [],
-                    messages: allMessages || [], // Trả về tất cả messages để tính unread count
-                    lastMessage: lastMessage // Tin nhắn cuối để hiển thị preview
+                    messages: allMessages || [],
+                    lastMessage: lastMessage,
+                    _metrics: convMetrics // Lưu metrics của từng conversation
                 };
             })
         );
+        metrics.steps.promiseAll = Date.now() - step2Start;
 
-        // Sắp xếp theo updated_at của conversation
+        // Tính tổng thời gian từng loại query
+        const lastMsgTimes = conversationsWithMessages.map(c => c._metrics?.lastMessageTime || 0);
+        const allMsgTimes = conversationsWithMessages.map(c => c._metrics?.allMessagesTime || 0);
+        const membersTimes = conversationsWithMessages.map(c => c._metrics?.membersTime || 0);
+
+        metrics.steps.avgLastMessageTime = lastMsgTimes.length > 0
+            ? Math.round(lastMsgTimes.reduce((a, b) => a + b, 0) / lastMsgTimes.length)
+            : 0;
+        metrics.steps.avgAllMessagesTime = allMsgTimes.length > 0
+            ? Math.round(allMsgTimes.reduce((a, b) => a + b, 0) / allMsgTimes.length)
+            : 0;
+        metrics.steps.avgMembersTime = membersTimes.length > 0
+            ? Math.round(membersTimes.reduce((a, b) => a + b, 0) / membersTimes.length)
+            : 0;
+        metrics.steps.maxAllMessagesTime = Math.max(...allMsgTimes, 0);
+
+        // === BƯỚC 3: Sắp xếp ===
+        const step3Start = Date.now();
         conversationsWithMessages.sort((a, b) =>
             new Date(b.updated_at) - new Date(a.updated_at)
         );
+        metrics.steps.sortTime = Date.now() - step3Start;
 
-        return { success: true, data: conversationsWithMessages };
+        // Remove _metrics trước khi return
+        const cleanData = conversationsWithMessages.map(({ _metrics, ...rest }) => rest);
+
+        metrics.queries.total = metrics.queries.initial + metrics.queries.lastMessages +
+            metrics.queries.allMessages + metrics.queries.members;
+        metrics.totalTime = Date.now() - metrics.startTime;
+
+        // Tính tổng data transfer
+        metrics.data.dataTransfer.total =
+            metrics.data.dataTransfer.initialQuery +
+            metrics.data.dataTransfer.lastMessages +
+            metrics.data.dataTransfer.allMessages +
+            metrics.data.dataTransfer.members;
+
+        // Log metrics quan trọng để so sánh (chỉ log khi được yêu cầu)
+        if (logMetrics) {
+            console.log('=========== METRICS GET CONVERSATIONS ===========');
+            console.log('⏱️ Tổng thời gian:', metrics.totalTime, 'ms');
+            console.log('⏱️ Promise.all (load conversations):', metrics.steps.promiseAll, 'ms');
+            console.log('⏱️ Trung bình query allMessages:', metrics.steps.avgAllMessagesTime, 'ms', '← BOTTLENECK');
+            console.log('📊 Tổng số queries:', metrics.queries.total);
+            console.log('📊 Tổng messages đang load:', metrics.data.totalMessagesLoaded, 'messages');
+            console.log('📊 Data transfer:');
+            console.log('   └─ Initial query:', (metrics.data.dataTransfer.initialQuery / 1024).toFixed(2), 'KB');
+            console.log('   └─ LastMessages:', (metrics.data.dataTransfer.lastMessages / 1024).toFixed(2), 'KB');
+            console.log('   └─ AllMessages:', (metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← LỚN NHẤT!');
+            console.log('   └─ Members:', (metrics.data.dataTransfer.members / 1024).toFixed(2), 'KB');
+            console.log('   └─ Tổng:', (metrics.data.dataTransfer.total / 1024).toFixed(2), 'KB');
+            console.log('=========== KẾT THÚC METRICS ===========');
+        }
+
+        return {
+            success: true,
+            data: cleanData,
+            metrics
+        };
     } catch (error) {
         console.log('getConversations error:', error);
-        return { success: false, msg: 'Không thể lấy danh sách cuộc trò chuyện' };
+        metrics.totalTime = Date.now() - metrics.startTime;
+        metrics.error = error.message;
+        return { success: false, msg: 'Không thể lấy danh sách cuộc trò chuyện', metrics };
     }
 };
 

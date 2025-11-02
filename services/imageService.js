@@ -9,7 +9,8 @@ export const getUserImageSrc = (imagePath) => {
         const url = getSupabaseFileUrl(imagePath);
         return url;
     } else {
-        return require('../assets/images/defaultUser.png');
+        // Use default avatar from Supabase Storage
+        return { uri: `${supabaseUrl}/storage/v1/object/public/upload/defaultUser.png` };
     }
 };
 export const downloadFile = async (url) => {
@@ -27,7 +28,28 @@ export const getLocalFilePath = (filePath) => {
 };
 export const getSupabaseFileUrl = (filePath) => {
     if (filePath) {
-        return { uri: `${supabaseUrl}/storage/v1/object/public/upload/${filePath}` };
+        // Nếu đã là full URL thì trả về trực tiếp
+        if (filePath.startsWith('http')) {
+            return { uri: filePath };
+        }
+
+        // Xử lý các bucket khác nhau cho path
+        if (filePath.includes('postImages/')) {
+            // Ảnh bài viết từ bucket postImages
+            return { uri: `${supabaseUrl}/storage/v1/object/public/postImages/${filePath}` };
+        } else if (filePath.includes('postVideos/')) {
+            // Video bài viết từ bucket postVideos  
+            return { uri: `${supabaseUrl}/storage/v1/object/public/postVideos/${filePath}` };
+        } else if (filePath.includes('documents/')) {
+            // Tài liệu từ bucket documents
+            return { uri: `${supabaseUrl}/storage/v1/object/public/documents/${filePath}` };
+        } else if (filePath.startsWith('upload/')) {
+            // File từ bucket upload
+            return { uri: `${supabaseUrl}/storage/v1/object/public/${filePath}` };
+        } else {
+            // Mặc định là bucket upload
+            return { uri: `${supabaseUrl}/storage/v1/object/public/upload/${filePath}` };
+        }
     }
     return null;
 };
@@ -39,9 +61,20 @@ export const uploadFile = async (folderName, fileUri, isImage = true) => {
             encoding: FileSystem.EncodingType.Base64,
         });
         let imageData = decode(fileBase64); // array buffer
+
+        // Xác định bucket dựa trên folderName
+        let bucketName = 'upload'; // mặc định
+        if (folderName === 'postImages' || folderName === 'postVideos') {
+            bucketName = folderName;
+        } else if (folderName === 'documents') {
+            bucketName = 'documents';
+        }
+
+        console.log('Uploading to bucket:', bucketName, 'with path:', fileName);
+
         let { data, error } = await supabase
             .storage
-            .from('upload')
+            .from(bucketName)
             .upload(fileName, imageData, {
                 cacheControl: '3600',
                 upsert: false,
@@ -53,7 +86,7 @@ export const uploadFile = async (folderName, fileUri, isImage = true) => {
             return { success: false, msg: "Không thể tải lên media" };
         }
 
-        console.log("data: ", data);
+        console.log("Upload success: ", data);
         return { success: true, data: data.path };
     } catch (error) {
         console.log("file upload error: ", error);

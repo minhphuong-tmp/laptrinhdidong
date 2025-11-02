@@ -1,9 +1,9 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Animated,
     FlatList,
-    Image,
     Modal,
     Pressable,
     SafeAreaView,
@@ -23,9 +23,11 @@ import CallManager from '../../services/callManager';
 import { fetchPost } from '../../services/postService';
 
 import Icon from '../../assets/icons';
+import AppHeader from '../../components/AppHeader';
 import Loading from '../../components/Loading';
 import PostCard from '../../components/PostCard';
 import UserAvatar from '../../components/UserAvatar';
+import { notificationService } from '../../services/notificationService';
 import { getUserData } from '../../services/userService';
 var limit = 0;
 const Home = () => {
@@ -38,13 +40,16 @@ const Home = () => {
     // States
     const [hasMore, setHasMore] = useState(true);
     const [notificationCount, setNotificationCount] = useState(0);
+    const [scrollToPostId, setScrollToPostId] = useState(null);
     const [posts, setPosts] = useState([]);
+    const flatListRef = useRef(null);
     const [comment, setComment] = useState(0);
     const [showMenu, setShowMenu] = useState(false);
     const [showCreatePost, setShowCreatePost] = useState(false);
     const [postContent, setPostContent] = useState('');
     const [incomingCall, setIncomingCall] = useState(null);
     const [showIncomingCall, setShowIncomingCall] = useState(false);
+    const [notifications, setNotifications] = useState([]);
     const subscriptionsRef = useRef({}); // Track subscriptions
     const slideAnim = useRef(new Animated.Value(wp(80))).current; // Bắt đầu từ ngoài màn hình
 
@@ -151,9 +156,123 @@ const Home = () => {
         console.log('got new notification', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
             setNotificationCount(prevCount => prevCount + 1);
+            // Reload notifications để có dữ liệu mới nhất
+            loadNotifications();
         }
 
     }
+
+    // Load notifications từ database
+    const loadNotifications = async () => {
+        if (!user?.id) return;
+
+        try {
+            const data = await notificationService.getPersonalNotifications(user.id);
+            setNotifications(data);
+
+            // Đếm số thông báo chưa đọc (mặc định tất cả đều chưa đọc vì không có trường is_read)
+            // TODO: Khi có trường is_read, thay đổi logic này
+            const unreadCount = data.length;
+            setNotificationCount(unreadCount);
+            console.log('Updated notification count in home:', unreadCount);
+            console.log('Loaded notifications:', data.length, 'Unread:', unreadCount);
+        } catch (error) {
+            console.log('Error in loadNotifications:', error);
+            // Fallback: set empty array nếu có lỗi
+            setNotifications([]);
+            setNotificationCount(0);
+        }
+    };
+
+    // Reload notifications khi quay lại từ personalNotifications
+    useFocusEffect(
+        useCallback(() => {
+            loadNotifications();
+        }, [user?.id])
+    );
+
+    // Xử lý scroll đến post cụ thể khi có scrollToPostId
+    useEffect(() => {
+        if (scrollToPostId && flatListRef.current && posts.length > 0) {
+            console.log('Scrolling to post:', scrollToPostId, 'Type:', typeof scrollToPostId);
+
+            // Tìm index của post cần scroll đến (convert cả 2 về string để so sánh)
+            const postIndex = posts.findIndex(post => String(post.id) === String(scrollToPostId));
+
+            if (postIndex !== -1) {
+                console.log('Found post at index:', postIndex);
+
+                // Scroll đến post với animation
+                setTimeout(() => {
+                    flatListRef.current?.scrollToIndex({
+                        index: postIndex,
+                        animated: true,
+                        viewPosition: 0.5, // Scroll để post ở giữa màn hình
+                    });
+                }, 500); // Delay để đảm bảo FlatList đã render xong
+            } else {
+                console.log('Post not found in current posts list');
+                console.log('Available post IDs:', posts.map(p => `${p.id} (${typeof p.id})`));
+                console.log('Looking for:', scrollToPostId, `(${typeof scrollToPostId})`);
+            }
+
+            setScrollToPostId(null); // Reset sau khi xử lý
+        }
+    }, [scrollToPostId, posts]);
+
+    // Kiểm tra AsyncStorage khi posts load xong để scroll đến post
+    useEffect(() => {
+        const checkScrollAfterPostsLoad = async () => {
+            if (posts.length > 0) {
+                try {
+                    const postId = await AsyncStorage.getItem('scrollToPostId');
+                    if (postId) {
+                        console.log('Posts loaded, scrolling to post:', postId);
+                        setScrollToPostId(postId);
+                    }
+                } catch (error) {
+                    console.log('Error checking scroll after posts load:', error);
+                }
+            }
+        };
+
+        checkScrollAfterPostsLoad();
+    }, [posts.length]);
+
+    // Kiểm tra AsyncStorage khi focus để scroll đến post
+    useFocusEffect(
+        useCallback(() => {
+            const checkScrollToPost = async () => {
+                try {
+                    const postId = await AsyncStorage.getItem('scrollToPostId');
+                    const commentId = await AsyncStorage.getItem('scrollToCommentId');
+
+                    if (postId) {
+                        console.log('Found postId to scroll to:', postId);
+                        if (commentId) {
+                            console.log('Found commentId to scroll to:', commentId);
+                        }
+
+                        // Chỉ set scrollToPostId nếu posts đã có dữ liệu
+                        if (posts.length > 0) {
+                            setScrollToPostId(postId);
+                        } else {
+                            // Nếu posts chưa load, lưu lại để scroll sau
+                            console.log('Posts not loaded yet, will scroll after posts load');
+                        }
+
+                        // Xóa khỏi AsyncStorage sau khi đã xử lý
+                        await AsyncStorage.removeItem('scrollToPostId');
+                        await AsyncStorage.removeItem('scrollToCommentId');
+                    }
+                } catch (error) {
+                    console.log('Error checking scrollToPost:', error);
+                }
+            };
+
+            checkScrollToPost();
+        }, [posts])
+    );
     const handleNewComment = async (payload) => {
         console.log('got new comment123', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
@@ -250,7 +369,7 @@ const Home = () => {
                 event: 'INSERT',
                 schema: 'public',
                 table: 'notifications',
-                filter: `receiverId=eq.${user.id}`
+                filter: `receiver_id=eq.${user.id}`
 
             }, (payload) => {
                 handleNewNotification(payload)
@@ -295,6 +414,7 @@ const Home = () => {
     useEffect(() => {
         if (user?.id) {
             getPosts();
+            loadNotifications();
         }
     }, [user?.id]);
 
@@ -312,60 +432,31 @@ const Home = () => {
     return (
         <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.backgroundSecondary }}>
             <View style={styles.container}>
-                {/* Facebook Header */}
-                <View style={styles.header}>
-                    <View style={styles.headerLeft}>
-                        <Image
-                            source={require('../../assets/images/logokma.jpg')}
-                            style={styles.logoImage}
-                            resizeMode="contain"
-                        />
-                        <Text style={styles.logo}>KMA</Text>
-                    </View>
-                    <View style={styles.headerRight}>
-                        <TouchableOpacity
-                            style={styles.headerIcon}
-                            onPress={() => {
-                                setNotificationCount(0);
-                                router.push('notifications');
-                            }}
-                        >
-                            <Icon name="zap" size={hp(2.8)} color={theme.colors.text} />
-                            {notificationCount > 0 && (
-                                <View style={styles.notificationBadge}>
-                                    <Text style={styles.notificationText}>{notificationCount}</Text>
-                                </View>
-                            )}
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIcon}
-                            onPress={() => router.push('chatList')}
-                        >
-                            <Icon name="chat" size={hp(2.8)} color={theme.colors.text} />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => router.push('profile')}>
-                            <UserAvatar
-                                user={user}
-                                size={hp(3.5)}
-                                rounded={theme.radius.full}
-                            />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.menuButton}
-                            onPress={() => setShowMenu(true)}
-                        >
-                            <Text style={styles.menuText}>☰</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
+                {/* App Header */}
+                <AppHeader
+                    notificationCount={notificationCount}
+                    onNotificationPress={() => router.push('personalNotifications')}
+                    onMenuPress={() => setShowMenu(true)}
+                />
 
 
                 {/* Posts Feed */}
                 <FlatList
+                    ref={flatListRef}
                     data={posts}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.listStyle}
-                    keyExtractor={(item) => item.id.toString()}
+                    keyExtractor={(item, index) => `post-${item.id}-${index}-${item.created_at || Date.now()}`}
+                    onScrollToIndexFailed={(info) => {
+                        console.log('Scroll to index failed:', info);
+                        // Fallback: scroll to offset
+                        setTimeout(() => {
+                            flatListRef.current?.scrollToOffset({
+                                offset: info.averageItemLength * info.index,
+                                animated: true,
+                            });
+                        }, 100);
+                    }}
                     ListHeaderComponent={() => (
                         <View style={styles.createPostContainer}>
                             <View style={styles.createPostBox}>
@@ -447,33 +538,88 @@ const Home = () => {
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
-                                            router.push('todo');
+                                            router.push('members');
                                         }}
                                     >
-                                        <Icon name="todo" size={hp(2.5)} color={theme.colors.text} />
-                                        <Text style={styles.menuItemText}>Ghi chú</Text>
+                                        <Icon name="users" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Thành viên</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
-                                            router.push('stats');
+                                            router.push('activities');
                                         }}
                                     >
-                                        <Icon name="stats" size={hp(2.5)} color={theme.colors.text} />
-                                        <Text style={styles.menuItemText}>Thống kê</Text>
+                                        <Icon name="activity" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Hoạt động</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
-                                            router.push('chatList');
+                                            router.push('documents');
                                         }}
                                     >
-                                        <Icon name="chat" size={hp(2.5)} color={theme.colors.text} />
-                                        <Text style={styles.menuItemText}>Tin nhắn</Text>
+                                        <Icon name="file-text" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Tài liệu</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('notifications');
+                                        }}
+                                    >
+                                        <Icon name="megaphone" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Thông báo CLB</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('events');
+                                        }}
+                                    >
+                                        <Icon name="calendar" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Lịch sự kiện</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('leaderboard');
+                                        }}
+                                    >
+                                        <Icon name="award" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Bảng xếp hạng</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('finance');
+                                        }}
+                                    >
+                                        <Icon name="dollar-sign" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Quản lý tài chính</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('contact');
+                                        }}
+                                    >
+                                        <Icon name="phone" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Liên hệ và hỗ trợ</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
@@ -576,6 +722,7 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: theme.colors.backgroundSecondary,
+        paddingTop: 35, // Consistent padding top
     },
 
     // Header Styles
@@ -642,6 +789,13 @@ const styles = StyleSheet.create({
         fontSize: hp(1.2),
         fontWeight: theme.fonts.bold,
     },
+
+    chatNotificationBadge: {
+        position: 'absolute',
+        top: -hp(0.5),
+        right: -hp(0.5),
+    },
+
 
     bellText: {
         fontSize: hp(2.5),
@@ -1190,7 +1344,7 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(0, 0, 0, 0.5)',
         justifyContent: 'flex-start',
         alignItems: 'flex-end', // Đẩy menu về phía phải
-        paddingTop: 0, // Để SafeAreaView handle
+        paddingTop: 35, // Consistent padding top
     },
 
     menuBackdrop: {
@@ -1211,6 +1365,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         paddingHorizontal: wp(4),
         paddingVertical: hp(2),
+        paddingTop: hp(3), // Thêm padding top
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
         backgroundColor: theme.colors.primary,

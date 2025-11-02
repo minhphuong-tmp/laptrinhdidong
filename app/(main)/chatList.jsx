@@ -12,6 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
 import { deleteConversation, getConversations } from '../../services/chatService';
+import performanceMetrics from '../../utils/performanceMetrics';
 
 const ChatList = () => {
     const { user } = useAuth();
@@ -19,15 +20,37 @@ const ChatList = () => {
     const [conversations, setConversations] = useState([]);
     const [loading, setLoading] = useState(true);
     const subscriptionRef = useRef(null);
+    const loadTimeRef = useRef(null);
+    const logHasRun = useRef(false);
+    const metricsLogged = useRef(false); // Flag riêng để track đã log metrics chưa
+    const isLoadingRef = useRef(false); // Flag để tránh load trùng
 
     useEffect(() => {
-        loadConversations();
+        // useEffect luôn load lần đầu tiên
+        if (!loadTimeRef.current) {
+            isLoadingRef.current = true;
+            loadTimeRef.current = Date.now();
+            logHasRun.current = false;
+            metricsLogged.current = false;
+            performanceMetrics.reset();
+            performanceMetrics.trackRender('ChatList-Mount');
+            console.log('=========== BẮT ĐẦU ĐO TỐC ĐỘ CHAT LIST ===========');
+            loadConversations().finally(() => {
+                isLoadingRef.current = false;
+            });
+        }
     }, []);
 
     // Refresh khi quay lại màn hình chat list
     useFocusEffect(
         useCallback(() => {
-            loadConversations(false);
+            // CHỈ reload im lặng nếu đã có loadTimeRef (đã load từ useEffect)
+            // KHÔNG load mới nếu chưa có loadTimeRef (để useEffect load)
+            if (loadTimeRef.current && !isLoadingRef.current) {
+                // Đã load rồi, chỉ reload im lặng (không log metrics)
+                loadConversations(false);
+            }
+            // Nếu chưa có loadTimeRef, không làm gì (để useEffect load)
         }, [])
     );
 
@@ -74,20 +97,54 @@ const ChatList = () => {
     }, [user?.id]);
 
     const loadConversations = async (showLoading = true) => {
-        if (!user?.id) return;
+        if (!user?.id) {
+            isLoadingRef.current = false;
+            return;
+        }
 
         if (showLoading) {
             setLoading(true);
         }
 
-        const res = await getConversations(user.id);
+        performanceMetrics.trackRender('ChatList-LoadStart');
+        const apiStartTime = Date.now();
+        // Chỉ log metrics cho lần đầu tiên (chưa log bao giờ)
+        const res = await getConversations(user.id, { logMetrics: !metricsLogged.current });
+        const apiTime = Date.now() - apiStartTime;
 
         if (showLoading) {
             setLoading(false);
         }
 
         if (res.success) {
+            // === METRICS: Track network data ===
+            // Estimate: Mỗi conversation khoảng 2KB JSON
+            const estimatedSize = res.data.length * 2048;
+            performanceMetrics.trackNetworkRequest(estimatedSize, 'download');
+
             setConversations(res.data);
+            performanceMetrics.trackRender('ChatList-SetConversations');
+
+            // === METRICS: Chỉ log đầy đủ cho lần đầu tiên ===
+            const totalTime = loadTimeRef.current ? Date.now() - loadTimeRef.current : 0;
+            if (totalTime > 0 && !logHasRun.current && !metricsLogged.current) {
+                // === METRICS: Log metrics quan trọng để so sánh ===
+                console.log('=========== CHỈ SỐ HIỆU NĂNG CHAT LIST ===========');
+                console.log('⏱️ Tổng thời gian load:', totalTime, 'ms');
+                console.log('⏱️ Thời gian API:', apiTime, 'ms');
+                console.log('📊 Số conversations:', res.data.length);
+                if (res.metrics) {
+                    console.log('📊 Tổng queries:', res.metrics.queries.total);
+                    console.log('📊 Tổng messages load:', res.metrics.data.totalMessagesLoaded, 'messages');
+                    console.log('📊 Data transfer tổng:', (res.metrics.data.dataTransfer.total / 1024).toFixed(2), 'KB');
+                    console.log('📊 Data transfer AllMessages:', (res.metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← CẦN TỐI ƯU');
+                }
+                console.log('=========== KẾT THÚC ĐO TỐC ĐỘ CHAT LIST ===========');
+
+                logHasRun.current = true;
+                metricsLogged.current = true; // Đánh dấu đã log metrics
+            }
+            // Lần sau chỉ reload im lặng, không log gì
         }
     };
 
@@ -201,6 +258,9 @@ const ChatList = () => {
     };
 
     const renderConversation = ({ item: conversation }) => {
+        // Track render performance
+        performanceMetrics.trackRender(`Conversation-${conversation.id}`);
+
         const lastMessage = getLastMessage(conversation);
         const unreadCount = getUnreadCount(conversation);
 
