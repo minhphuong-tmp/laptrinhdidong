@@ -12,6 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
 import { deleteConversation, getConversations } from '../../services/chatService';
+import { loadConversationsCache, saveConversationsCache } from '../../utils/conversationCache';
 import performanceMetrics from '../../utils/performanceMetrics';
 
 const ChatList = () => {
@@ -27,19 +28,33 @@ const ChatList = () => {
 
     useEffect(() => {
         // useEffect luôn load lần đầu tiên
-        if (!loadTimeRef.current) {
+        if (!loadTimeRef.current && user?.id) {
             isLoadingRef.current = true;
             loadTimeRef.current = Date.now();
             logHasRun.current = false;
             metricsLogged.current = false;
             performanceMetrics.reset();
             performanceMetrics.trackRender('ChatList-Mount');
-            console.log('=========== BẮT ĐẦU ĐO TỐC ĐỘ CHAT LIST ===========');
+            console.log('=========== BẮT ĐẦU ĐO TỐC ĐỘ CHAT LIST (CACHE FIRST) ===========');
+
+            // === CACHE FIRST: Load từ cache ngay, show UI tức thì ===
+            loadConversationsCache(user.id).then((cachedConversations) => {
+                if (cachedConversations && cachedConversations.length > 0) {
+                    console.log('⚡ [Cache First] Hiển thị cache ngay:', cachedConversations.length, 'conversations');
+                    setConversations(cachedConversations);
+                    setLoading(false); // Hide loading ngay khi có cache
+                } else {
+                    console.log('⚡ [Cache First] Không có cache, sẽ đợi fetch từ API');
+                    // Không có cache, giữ loading = true để show loading screen
+                }
+            });
+
+            // === Fetch fresh data ở background ===
             loadConversations().finally(() => {
                 isLoadingRef.current = false;
             });
         }
-    }, []);
+    }, [user?.id]);
 
     // Refresh khi quay lại màn hình chat list
     useFocusEffect(
@@ -125,20 +140,26 @@ const ChatList = () => {
             setConversations(res.data);
             performanceMetrics.trackRender('ChatList-SetConversations');
 
+            // === CACHE: Lưu conversations vào cache ===
+            if (user?.id) {
+                saveConversationsCache(user.id, res.data);
+            }
+
             // === METRICS: Chỉ log đầy đủ cho lần đầu tiên ===
             const totalTime = loadTimeRef.current ? Date.now() - loadTimeRef.current : 0;
             if (totalTime > 0 && !logHasRun.current && !metricsLogged.current) {
                 // === METRICS: Log metrics quan trọng để so sánh ===
-                console.log('=========== CHỈ SỐ HIỆU NĂNG CHAT LIST ===========');
+                console.log('=========== CHỈ SỐ HIỆU NĂNG CHAT LIST (CACHE FIRST + SQL COUNT) ===========');
                 console.log('⏱️ Tổng thời gian load:', totalTime, 'ms');
                 console.log('⏱️ Thời gian API:', apiTime, 'ms');
                 console.log('📊 Số conversations:', res.data.length);
                 if (res.metrics) {
                     console.log('📊 Tổng queries:', res.metrics.queries.total);
-                    console.log('📊 Tổng messages load:', res.metrics.data.totalMessagesLoaded, 'messages');
+                    console.log('📊 Messages load:', res.metrics.data.totalMessagesLoaded, 'messages (KHÔNG load allMessages nữa!)');
                     console.log('📊 Data transfer tổng:', (res.metrics.data.dataTransfer.total / 1024).toFixed(2), 'KB');
-                    console.log('📊 Data transfer AllMessages:', (res.metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← CẦN TỐI ƯU');
+                    console.log('📊 Data transfer COUNT unread:', (res.metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← ĐÃ GIẢM!');
                 }
+                console.log('⚡ [Cache First] UI đã hiển thị từ cache trước đó (0ms)');
                 console.log('=========== KẾT THÚC ĐO TỐC ĐỘ CHAT LIST ===========');
 
                 logHasRun.current = true;
@@ -192,14 +213,11 @@ const ChatList = () => {
     };
 
     const getLastMessage = (conversation) => {
-        // Sử dụng lastMessage nếu có, fallback về messages[0]
+        // Chỉ dùng lastMessage từ query (không còn messages array nữa)
         if (conversation.lastMessage) {
             return conversation.lastMessage;
         }
-        if (!conversation.messages || conversation.messages.length === 0) {
-            return { content: 'Chưa có tin nhắn', type: 'text' };
-        }
-        return conversation.messages[0];
+        return { content: 'Chưa có tin nhắn', type: 'text' };
     };
 
     const getConversationName = (conversation) => {
@@ -227,24 +245,9 @@ const ChatList = () => {
     };
 
     const getUnreadCount = (conversation) => {
-        const member = conversation.conversation_members?.find(
-            m => m.user_id === user.id
-        );
-        if (!member || !conversation.messages) {
-            console.log('No member or messages for conversation:', conversation.id);
-            return 0;
-        }
-
-        const lastReadAt = new Date(member.last_read_at);
-        const unreadMessages = conversation.messages.filter(msg => {
-            const messageTime = new Date(msg.created_at);
-            const isUnread = messageTime > lastReadAt && msg.sender_id !== user.id;
-            return isUnread;
-        });
-
-        // Debug unread count
-
-        return unreadMessages.length;
+        // Dùng unreadCount từ SQL COUNT query (đã tối ưu)
+        // Không cần tính lại từ messages nữa
+        return conversation.unreadCount || 0;
     };
 
     const formatTime = (timestamp) => {

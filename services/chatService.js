@@ -213,24 +213,23 @@ export const getConversations = async (userId, options = {}) => {
                     metrics.data.dataTransfer.lastMessages += JSON.stringify(lastMessage).length;
                 }
 
-                // === Lấy TẤT CẢ tin nhắn để tính unread count ===
+                // === ĐẾM unread messages bằng SQL COUNT (tối ưu) ===
                 const allMsgStart = Date.now();
-                const { data: allMessages } = await supabase
+                const lastReadAt = item.last_read_at || new Date(0).toISOString();
+                const { count: unreadCount, error: countError } = await supabase
                     .from('messages')
-                    .select(`
-                        id,
-                        created_at,
-                        sender_id
-                    `)
+                    .select('*', { count: 'exact', head: true }) // Chỉ COUNT, không load data
                     .eq('conversation_id', item.conversation_id)
-                    .order('created_at', { ascending: false });
+                    .gt('created_at', lastReadAt)
+                    .neq('sender_id', userId);
                 convMetrics.allMessagesTime = Date.now() - allMsgStart;
-                convMetrics.messagesCount = allMessages?.length || 0;
+                convMetrics.messagesCount = 0; // Không load messages nữa
+                convMetrics.unreadCount = unreadCount || 0;
                 metrics.queries.allMessages++;
-                metrics.data.totalMessagesLoaded += convMetrics.messagesCount;
-                // Estimate: mỗi message trong allMessages ~100 bytes (id, created_at, sender_id)
-                if (allMessages) {
-                    metrics.data.dataTransfer.allMessages += JSON.stringify(allMessages).length;
+                // Data transfer: chỉ 4 bytes (1 số int) thay vì hàng trăm KB
+                metrics.data.dataTransfer.allMessages += 4; // Ước tính 4 bytes cho count
+                if (countError) {
+                    console.log('Count unread error for conversation', item.conversation_id, ':', countError);
                 }
 
                 // === Lấy thông tin thành viên ===
@@ -255,7 +254,7 @@ export const getConversations = async (userId, options = {}) => {
                 return {
                     ...item.conversation,
                     conversation_members: members || [],
-                    messages: allMessages || [],
+                    unreadCount: convMetrics.unreadCount, // Thêm unreadCount từ COUNT query
                     lastMessage: lastMessage,
                     _metrics: convMetrics // Lưu metrics của từng conversation
                 };
@@ -265,19 +264,19 @@ export const getConversations = async (userId, options = {}) => {
 
         // Tính tổng thời gian từng loại query
         const lastMsgTimes = conversationsWithMessages.map(c => c._metrics?.lastMessageTime || 0);
-        const allMsgTimes = conversationsWithMessages.map(c => c._metrics?.allMessagesTime || 0);
+        const countUnreadTimes = conversationsWithMessages.map(c => c._metrics?.allMessagesTime || 0); // Giờ là COUNT query
         const membersTimes = conversationsWithMessages.map(c => c._metrics?.membersTime || 0);
 
         metrics.steps.avgLastMessageTime = lastMsgTimes.length > 0
             ? Math.round(lastMsgTimes.reduce((a, b) => a + b, 0) / lastMsgTimes.length)
             : 0;
-        metrics.steps.avgAllMessagesTime = allMsgTimes.length > 0
-            ? Math.round(allMsgTimes.reduce((a, b) => a + b, 0) / allMsgTimes.length)
+        metrics.steps.avgAllMessagesTime = countUnreadTimes.length > 0
+            ? Math.round(countUnreadTimes.reduce((a, b) => a + b, 0) / countUnreadTimes.length)
             : 0;
         metrics.steps.avgMembersTime = membersTimes.length > 0
             ? Math.round(membersTimes.reduce((a, b) => a + b, 0) / membersTimes.length)
             : 0;
-        metrics.steps.maxAllMessagesTime = Math.max(...allMsgTimes, 0);
+        metrics.steps.maxAllMessagesTime = Math.max(...countUnreadTimes, 0);
 
         // === BƯỚC 3: Sắp xếp ===
         const step3Start = Date.now();
@@ -302,16 +301,16 @@ export const getConversations = async (userId, options = {}) => {
 
         // Log metrics quan trọng để so sánh (chỉ log khi được yêu cầu)
         if (logMetrics) {
-            console.log('=========== METRICS GET CONVERSATIONS ===========');
+            console.log('=========== METRICS GET CONVERSATIONS (SQL COUNT OPTIMIZED) ===========');
             console.log('⏱️ Tổng thời gian:', metrics.totalTime, 'ms');
             console.log('⏱️ Promise.all (load conversations):', metrics.steps.promiseAll, 'ms');
-            console.log('⏱️ Trung bình query allMessages:', metrics.steps.avgAllMessagesTime, 'ms', '← BOTTLENECK');
+            console.log('⏱️ Trung bình query COUNT unread:', metrics.steps.avgAllMessagesTime, 'ms', '← ĐÃ TỐI ƯU!');
             console.log('📊 Tổng số queries:', metrics.queries.total);
-            console.log('📊 Tổng messages đang load:', metrics.data.totalMessagesLoaded, 'messages');
+            console.log('📊 Messages đã load:', metrics.data.totalMessagesLoaded, 'messages (KHÔNG load allMessages nữa!)');
             console.log('📊 Data transfer:');
             console.log('   └─ Initial query:', (metrics.data.dataTransfer.initialQuery / 1024).toFixed(2), 'KB');
             console.log('   └─ LastMessages:', (metrics.data.dataTransfer.lastMessages / 1024).toFixed(2), 'KB');
-            console.log('   └─ AllMessages:', (metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← LỚN NHẤT!');
+            console.log('   └─ COUNT unread:', (metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← GIẢM ĐÁNG KỂ!');
             console.log('   └─ Members:', (metrics.data.dataTransfer.members / 1024).toFixed(2), 'KB');
             console.log('   └─ Tổng:', (metrics.data.dataTransfer.total / 1024).toFixed(2), 'KB');
             console.log('=========== KẾT THÚC METRICS ===========');
