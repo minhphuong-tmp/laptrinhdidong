@@ -125,13 +125,15 @@ const ChatList = () => {
         const apiStartTime = Date.now();
         // Chỉ log metrics cho lần đầu tiên (chưa log bao giờ)
         const res = await getConversations(user.id, { logMetrics: !metricsLogged.current });
-        const apiTime = Date.now() - apiStartTime;
 
         if (showLoading) {
             setLoading(false);
         }
 
         if (res.success) {
+            // === METRICS: Tính thời gian API (chỉ khi success) ===
+            const apiTime = Date.now() - apiStartTime;
+
             // === METRICS: Track network data ===
             // Estimate: Mỗi conversation khoảng 2KB JSON
             const estimatedSize = res.data.length * 2048;

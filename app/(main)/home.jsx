@@ -174,8 +174,6 @@ const Home = () => {
             // TODO: Khi có trường is_read, thay đổi logic này
             const unreadCount = data.length;
             setNotificationCount(unreadCount);
-            console.log('Updated notification count in home:', unreadCount);
-            console.log('Loaded notifications:', data.length, 'Unread:', unreadCount);
         } catch (error) {
             console.log('Error in loadNotifications:', error);
             // Fallback: set empty array nếu có lỗi

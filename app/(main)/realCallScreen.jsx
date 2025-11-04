@@ -8,7 +8,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
-import { RTCView } from 'react-native-webrtc';
+// import { RTCView } from 'react-native-webrtc'; // Commented: không support trong Expo Go
 import Icon from '../../assets/icons';
 import ScreenWrapper from '../../components/ScreenWrapper';
 import { theme } from '../../constants/theme';
@@ -165,22 +165,18 @@ export default function RealCallScreen() {
 
                 {/* Video Container */}
                 <View style={styles.videoContainer}>
-                    {/* Remote Video */}
+                    {/* Remote Video - Commented: RTCView không support trong Expo Go */}
                     {remoteStream && (
-                        <RTCView
-                            style={styles.remoteVideo}
-                            streamURL={remoteStream.toURL()}
-                            mirror={false}
-                        />
+                        <View style={styles.remoteVideo}>
+                            <Text style={{ color: 'white' }}>Video không khả dụng trong Expo Go</Text>
+                        </View>
                     )}
 
-                    {/* Local Video (Picture-in-Picture) */}
+                    {/* Local Video - Commented: RTCView không support trong Expo Go */}
                     {localStream && isVideoEnabled && (
-                        <RTCView
-                            style={styles.localVideo}
-                            streamURL={localStream.toURL()}
-                            mirror={true}
-                        />
+                        <View style={styles.localVideo}>
+                            <Text style={{ color: 'white', fontSize: 10 }}>Local Video</Text>
+                        </View>
                     )}
 
                     {/* Call Info Overlay */}

@@ -121,8 +121,8 @@ const PersonalNotifications = () => {
                     postId: parsedData.postId || null,
                     commentId: parsedData.commentId || null,
                     user: {
-                        id: notification.sender?.id || notification.sender_id || 'system',
-                        name: notification.sender?.name || (notification.sender_id ? 'Người dùng' : 'Hệ thống'),
+                        id: notification.sender?.id || notification.senderId || 'system', // Sửa: senderId thay vì sender_id
+                        name: notification.sender?.name || (notification.senderId ? 'Người dùng' : 'Hệ thống'), // Sửa: senderId thay vì sender_id
                         image: notification.sender?.image || null
                     }
                 };

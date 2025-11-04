@@ -10,7 +10,7 @@ class CallManager {
         this.onCallEnded = null;
         this.isListening = false;
         this.useAgora = false; // Disable Agora for Expo Go
-        this.useRealWebRTC = true; // Enable real WebRTC
+        this.useRealWebRTC = false; // Disable real WebRTC for Expo Go (không support react-native-webrtc)
         this.useMock = false; // NO MOCK EVER
         this.useWebCall = false; // Disable WebView call
         this.useStream = false; // Stream removed

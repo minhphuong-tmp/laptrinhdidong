@@ -2,21 +2,24 @@ import { supabase } from '../lib/supabase';
 import { answerCall, endCall } from './callService';
 
 // Import WebRTC (will work in development build)
+// Commented: react-native-webrtc không support trong Expo Go
 let RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, MediaStream, MediaStreamTrack;
 let getUserMedia, createLocalTracks;
 let isWebRTCAvailable = false;
 
 try {
-    const WebRTC = require('react-native-webrtc');
-    RTCPeerConnection = WebRTC.RTCPeerConnection;
-    RTCSessionDescription = WebRTC.RTCSessionDescription;
-    RTCIceCandidate = WebRTC.RTCIceCandidate;
-    MediaStream = WebRTC.MediaStream;
-    MediaStreamTrack = WebRTC.MediaStreamTrack;
-    getUserMedia = WebRTC.getUserMedia;
-    createLocalTracks = WebRTC.createLocalTracks;
-    isWebRTCAvailable = true;
-    console.log('WebRTC modules loaded successfully');
+    // const WebRTC = require('react-native-webrtc'); // Commented: không support trong Expo Go
+    // RTCPeerConnection = WebRTC.RTCPeerConnection;
+    // RTCSessionDescription = WebRTC.RTCSessionDescription;
+    // RTCIceCandidate = WebRTC.RTCIceCandidate;
+    // MediaStream = WebRTC.MediaStream;
+    // MediaStreamTrack = WebRTC.MediaStreamTrack;
+    // getUserMedia = WebRTC.getUserMedia;
+    // createLocalTracks = WebRTC.createLocalTracks;
+    // isWebRTCAvailable = true;
+    // console.log('WebRTC modules loaded successfully');
+    console.log('WebRTC disabled for Expo Go');
+    isWebRTCAvailable = false;
 } catch (error) {
     console.log('WebRTC not available, using mock:', error.message);
     isWebRTCAvailable = false;
