@@ -4,25 +4,49 @@ export const notificationService = {
     // Lấy tất cả thông báo cá nhân của user
     async getPersonalNotifications(userId) {
         try {
-            const { data, error } = await supabase
+            // Query notifications trước
+            const { data: notifications, error: notificationsError } = await supabase
                 .from('notifications')
-                .select(`
-                    *,
-                    sender:users!sender_id(
-                        id,
-                        name,
-                        image
-                    )
-                `)
-                .eq('receiver_id', userId)
+                .select('*')
+                .eq('receiverId', userId) // Sửa: receiverId thay vì receiver_id
                 .order('created_at', { ascending: false });
 
-            if (error) {
-                console.error('Error fetching personal notifications:', error);
-                throw error;
+            if (notificationsError) {
+                console.error('Error fetching personal notifications:', notificationsError);
+                throw notificationsError;
             }
 
-            return data || [];
+            // Nếu không có notifications, return ngay
+            if (!notifications || notifications.length === 0) {
+                return [];
+            }
+
+            // Lấy danh sách senderId unique
+            const senderIds = [...new Set(notifications.map(n => n.senderId).filter(Boolean))]; // Sửa: senderId thay vì sender_id
+
+            // Query users nếu có senderId
+            let sendersMap = {};
+            if (senderIds.length > 0) {
+                const { data: senders, error: sendersError } = await supabase
+                    .from('users')
+                    .select('id, name, image')
+                    .in('id', senderIds);
+
+                if (!sendersError && senders) {
+                    sendersMap = senders.reduce((acc, user) => {
+                        acc[user.id] = user;
+                        return acc;
+                    }, {});
+                }
+            }
+
+            // Map notifications với sender info
+            const notificationsWithSender = notifications.map(notification => ({
+                ...notification,
+                sender: notification.senderId ? sendersMap[notification.senderId] || null : null // Sửa: senderId thay vì sender_id
+            }));
+
+            return notificationsWithSender;
         } catch (error) {
             console.error('Error in getPersonalNotifications:', error);
             throw error;
@@ -78,7 +102,7 @@ export const notificationService = {
             const { data, error } = await supabase
                 .from('notifications')
                 .update({ is_read: true })
-                .eq('receiver_id', userId)
+                .eq('receiverId', userId) // Sửa: receiverId thay vì receiver_id
                 .eq('is_read', false);
 
             if (error) {
@@ -121,7 +145,7 @@ export const notificationService = {
             const { count, error } = await supabase
                 .from('notifications')
                 .select('*', { count: 'exact', head: true })
-                .eq('receiver_id', userId)
+                .eq('receiverId', userId) // Sửa: receiverId thay vì receiver_id
                 .eq('is_read', false);
 
             if (error) {
@@ -142,7 +166,7 @@ export const notificationService = {
             const { data, error } = await supabase
                 .from('notifications')
                 .select('*')
-                .eq('receiver_id', userId)
+                .eq('receiverId', userId) // Sửa: receiverId thay vì receiver_id
                 .eq('type', type)
                 .order('created_at', { ascending: false });
 

@@ -21,6 +21,11 @@ export const AuthProvider = ({ children }) => {
 
                 if (error) {
                     console.log('Session error:', error);
+                    // Nếu là lỗi refresh token, clear session và redirect
+                    if (error.message?.includes('Refresh Token') || error.message?.includes('Invalid')) {
+                        console.log('Invalid refresh token, clearing session...');
+                        await supabase.auth.signOut();
+                    }
                     setUser(null);
                     setLoading(false);
                     return;
@@ -35,6 +40,11 @@ export const AuthProvider = ({ children }) => {
                 }
             } catch (error) {
                 console.log('Check session error:', error);
+                // Nếu là lỗi refresh token, clear session
+                if (error.message?.includes('Refresh Token') || error.message?.includes('Invalid')) {
+                    console.log('Invalid refresh token in catch, clearing session...');
+                    await supabase.auth.signOut();
+                }
                 setUser(null);
             } finally {
                 setLoading(false);
@@ -64,6 +74,13 @@ export const AuthProvider = ({ children }) => {
                 } else if (event === 'TOKEN_REFRESHED' && session?.user) {
                     console.log('Token refreshed for user:', session.user.email);
                     setUser(session.user);
+                } else if (event === 'TOKEN_REFRESHED' && !session) {
+                    // Token refresh failed, clear session
+                    console.log('Token refresh failed, signing out...');
+                    await supabase.auth.signOut();
+                    setUser(null);
+                    setLoading(false);
+                    router.replace('/welcome');
                 }
             }
         );
