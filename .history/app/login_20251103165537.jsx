@@ -2,7 +2,6 @@ import { useRouter } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useRef, useState } from 'react'
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
-import ReCAPTCHA from 'react-native-recaptcha-that-works'
 import Icon from '../assets/icons'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
@@ -12,11 +11,10 @@ import { theme } from '../constants/theme'
 import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
-//6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2
+
 
 
 const Login = () => {
-    const [capVal, setCapVal] = useState(null);
     const router = useRouter()
     const { setAuth } = useAuth()
 
@@ -96,13 +94,8 @@ const Login = () => {
                             Quên mật khẩu ?
                         </Text>
                         {/* button */}
-                        <Button disabled={!capVal} title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
-                       
-                        {/* recaptcha */}
-                        <ReCAPTCHA
-                        sitekey = "6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2"
-                        onChange ={(val) => setCapVal(val)}
-                        />
+                        <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
+
                     </View>
                     {/* footer */}
                     <View style={styles.footer}>

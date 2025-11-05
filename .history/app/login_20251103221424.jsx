@@ -96,8 +96,7 @@ const Login = () => {
                             Quên mật khẩu ?
                         </Text>
                         {/* button */}
-                        <Button disabled={!capVal} title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
-                       
+                        <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
                         {/* recaptcha */}
                         <ReCAPTCHA
                         sitekey = "6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2"
