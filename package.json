@@ -58,6 +58,8 @@
     "react-native-get-random-values": "^1.11.0",
     "react-native-pell-rich-editor": "^1.9.0",
     "react-native-reanimated": "~4.1.1",
+    "react-native-recaptcha-that-works": "^2.0.0",
+    "react-native-recaptcha-v3": "^0.0.16",
     "react-native-reconnecting-websocket": "^2.0.0",
     "react-native-render-html": "^6.3.4",
     "react-native-safe-area-context": "~5.6.0",

@@ -44,7 +44,7 @@ const Login = () => {
             // Thay thế URL dưới đây bằng URL dự án Supabase thực tế của bạn
             // Bạn có thể lấy nó trong Settings -> API -> Project URL
             // Ví dụ: https://oktlakdvlmkaalymgrwd.supabase.co
-            const PROJECT_URL = 'https://oqtlakdvlmkaalymgrwd.supabase.co'; 
+            const PROJECT_URL = 'https://[YOUR_PROJECT_ID].supabase.co'; 
             
             const response = await fetch(`${PROJECT_URL}/functions/v1/auth-login`, {
                 method: 'POST',

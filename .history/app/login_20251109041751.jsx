@@ -36,59 +36,36 @@ const Login = () => {
     };
 
     // [Thêm mới] Hàm xử lý Đăng nhập Chính (Bao gồm Token)
-   const finalizeLogin = async (recaptchaToken) => {
+    const finalizeLogin = async (recaptchaToken) => {
         let email = emailRef.current.trim();
         let password = passwordRef.current.trim();
-
+        
+        // Trong luồng hiện tại, bạn đang dùng Supabase Auth,
+        // Supabase KHÔNG có API cho phép bạn gửi kèm reCAPTCHA token trực tiếp.
+        // Đây là điểm bạn **PHẢI** chuyển sang dùng Edge Function.
+        
+        // **[QUAN TRỌNG: CẦN THAY THẾ SAU KHI TRIỂN KHAI EDGE FUNCTION]**
+        // Tạm thời, chúng ta vẫn gọi Supabase để test luồng, NHƯNG
+        // TRONG MÔI TRƯỜNG PRODUCTION, BẠN PHẢI GỌI EDGE FUNCTION CỦA MÌNH TẠI ĐÂY.
+        
         try {
-            // Thay thế URL dưới đây bằng URL dự án Supabase thực tế của bạn
-            // Bạn có thể lấy nó trong Settings -> API -> Project URL
-            // Ví dụ: https://oktlakdvlmkaalymgrwd.supabase.co
-            const PROJECT_URL = 'https://oqtlakdvlmkaalymgrwd.supabase.co'; 
+            // (1) Trong môi trường Production: Gửi email, password, và recaptchaToken tới EDGE FUNCTION
             
-            const response = await fetch(`${PROJECT_URL}/functions/v1/auth-login`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    // Nếu bạn có bật "Enforce JWT Verification" cho function thì cần thêm header Authorization
-                    // 'Authorization': `Bearer ${supabaseKey}` 
-                },
-                body: JSON.stringify({
-                    email: email,
-                    password: password,
-                    recaptchaToken: recaptchaToken, 
-                }),
+            // (2) Tạm thời cho mục đích test (Bỏ qua reCAPTCHA ở Backend):
+            const { data: { session }, error } = await supabase.auth.signInWithPassword({
+                email,
+                password,
             });
 
-            const data = await response.json();
+            console.log('Login response:', { session: !!session, error: error?.message });
 
-            // Kiểm tra status code trả về từ Edge Function
-            if (!response.ok) {
-                // Nếu lỗi (400, 401, 403, 429...)
-                // data.message chính là thông báo lỗi bạn viết trong file index.ts
-                Alert.alert('Đăng nhập thất bại', data.message || 'Có lỗi xảy ra.');
-                return;
+            if (error) {
+                Alert.alert('Lỗi đăng nhập', error.message);
+            } else if (session) {
+                setAuth(session.user);
             }
-
-            // Nếu thành công (200)
-            console.log('Login successful via Edge Function');
-            if (data.session && data.user) {
-                // Cập nhật session vào Supabase Client ở App để các chức năng khác hoạt động
-                const { error: sessionError } = await supabase.auth.setSession({
-                    access_token: data.session.access_token,
-                    refresh_token: data.session.refresh_token,
-                });
-
-                if (sessionError) {
-                    Alert.alert('Lỗi Session', sessionError.message);
-                } else {
-                    setAuth(data.user);
-                }
-            }
-
         } catch (err) {
-            console.log('Login exception:', err);
-            Alert.alert('Lỗi mạng', 'Không thể kết nối tới server.');
+            Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng nhập');
         } finally {
             setLoading(false);
         }
