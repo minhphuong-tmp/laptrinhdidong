@@ -204,22 +204,6 @@ const PostCard = ({
                         transition={100}
                         style={styles.postMedia}
                         contentFit="cover"
-                        onError={(error) => {
-                            console.log('=== IMAGE DEBUG ===');
-                            console.log('Original item.file:', item?.file);
-                            console.log('File type:', typeof item?.file);
-                            console.log('Is full URL:', item?.file?.startsWith?.('http'));
-                            console.log('Generated URL:', getSupabaseFileUrl(item?.file));
-                            console.log('Error details:', error);
-
-                            // Test với ảnh cụ thể
-                            console.log('Testing specific image: 1761621589861_tf5kjdwexnj.png');
-                            console.log('Test URL:', `${supabaseUrl}/storage/v1/object/public/postImages/1761621589861_tf5kjdwexnj.png`);
-                        }}
-                        onLoad={() => {
-                            console.log('Image loaded successfully for file:', item?.file);
-                            console.log('Generated URL:', getSupabaseFileUrl(item?.file));
-                        }}
                     />
                 )}
                 {item?.file && item?.file.includes('postVideos') && (

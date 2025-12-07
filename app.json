@@ -13,6 +13,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to camera for video calls",
         "NSMicrophoneUsageDescription": "This app needs access to microphone for voice and video calls",
+        "NSFaceIDUsageDescription": "This app uses Face ID / Touch ID for secure and convenient login",
         "ITSAppUsesNonExemptEncryption": false
       },
       "bundleIdentifier": "com.phuongtmp.laptrinhdidong"
@@ -29,8 +30,9 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.INTERNET",
-        "android.permission.WAKE_LOCK",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ],
       "package": "com.phuongtmp.laptrinhdidong"
     },
