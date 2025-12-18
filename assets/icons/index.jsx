@@ -25,6 +25,8 @@ import Logout from './logout';
 import Mail from './Mail';
 import Megaphone from './Megaphone';
 import MessageCircle from './MessageCircle';
+import Mic from './Mic';
+import MicOff from './MicOff';
 import NotificationBadge from './NotificationBadge';
 import Phone from './Phone';
 import Plus from './Plus';
@@ -33,6 +35,8 @@ import Search from './Search';
 import Send from './Send';
 import Settings from './Settings';
 import Share from './Share';
+import Speaker from './Speaker';
+import SpeakerOff from './SpeakerOff';
 import Stats from './Stats';
 import ThreeDotsCircle from './ThreeDotsCircle';
 import ThreeDotsHorizontal from './ThreeDotsHorizontal';
@@ -90,6 +94,10 @@ const icons = {
   'settings': Settings,
   'message-circle': MessageCircle,
   'user-plus': UserPlus,
+  mic: Mic,
+  micOff: MicOff,
+  speaker: Speaker,
+  speakerOff: SpeakerOff,
 }
 
 const Icon = ({ name, ...props }) => {

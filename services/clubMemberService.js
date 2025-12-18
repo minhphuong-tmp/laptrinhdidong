@@ -1,5 +1,6 @@
 import { supabaseUrl } from '../constants/index';
 import { supabase } from '../lib/supabase';
+import { loadMembersCache } from '../utils/cacheHelper';
 
 export const clubMemberService = {
     // Debug function để kiểm tra users table
@@ -10,17 +11,23 @@ export const clubMemberService = {
                 .select('id, name, image, email')
                 .limit(5);
 
-            console.log('Users table data:', data);
-            console.log('Users error:', error);
             return { success: true, data };
         } catch (error) {
-            console.log('Debug users error:', error);
             return { success: false, msg: error.message };
         }
     },
     // Lấy tất cả thành viên CLB
-    getAllMembers: async () => {
+    getAllMembers: async (userId = null, useCache = true) => {
         try {
+            // Check cache trước nếu có userId
+            if (useCache && userId) {
+                const cached = await loadMembersCache(userId);
+                if (cached && cached.data) {
+                    return { success: true, data: cached.data, fromCache: true };
+                }
+            }
+
+            // Fetch từ database
             const { data, error } = await supabase
                 .from('clb_members')
                 .select(`
@@ -29,17 +36,6 @@ export const clubMemberService = {
                 `)
                 .order('created_at', { ascending: false });
 
-            console.log('Raw data from database:', data);
-
-            // Debug: Kiểm tra một vài user có image không
-            data.slice(0, 3).forEach((member, index) => {
-                console.log(`Member ${index + 1}:`, {
-                    name: member.user?.name,
-                    image: member.user?.image,
-                    hasImage: !!member.user?.image
-                });
-            });
-
             if (error) {
                 console.log('Error fetching club members:', error);
                 return { success: false, msg: error.message, data: [] };
@@ -47,32 +43,15 @@ export const clubMemberService = {
 
             // Transform data để match với UI
             const transformedData = data.map(member => {
-                console.log('Processing member:', member);
-                console.log('User data:', member.user);
-                console.log('User image:', member.user?.image);
-
                 // Xử lý avatar URL
                 let avatarUrl = `${supabaseUrl}/storage/v1/object/public/upload/defaultUser.png`;
                 if (member.user?.image) {
-                    console.log('Processing avatar for:', member.user.name, 'Image:', member.user.image);
                     if (member.user.image.startsWith('http')) {
                         // Đã là full URL
                         avatarUrl = member.user.image;
-                        console.log('Using full URL:', avatarUrl);
                     } else if (member.user.image.startsWith('profiles/')) {
-                        // Thử các bucket name khác nhau
-                        const possibleBuckets = ['avatars', 'profiles', 'images', 'public'];
                         avatarUrl = `${supabaseUrl}/storage/v1/object/public/upload/${member.user.image}`;
-                        console.log('Generated storage URL:', avatarUrl);
-
-                        // Thử bucket khác nếu cần
-                        console.log('Alternative URLs:');
-                        possibleBuckets.forEach(bucket => {
-                            console.log(`${supabaseUrl}/storage/v1/object/public/${bucket}/${member.user.image}`);
-                        });
                     }
-                } else {
-                    console.log('No image for:', member.user?.name);
                 }
 
                 return {
@@ -91,12 +70,6 @@ export const clubMemberService = {
                 };
             });
 
-            // Debug: In ra tất cả vai trò để kiểm tra
-            console.log('=== DEBUG ROLES ===');
-            transformedData.forEach((member, index) => {
-                console.log(`${index + 1}. ${member.name} - Role: "${member.role}"`);
-            });
-
             // Sắp xếp theo vai trò: Chủ nhiệm CLB -> Phó Chủ Nhiệm -> Thành viên
             transformedData.sort((a, b) => {
                 const roleOrder = {
@@ -108,8 +81,6 @@ export const clubMemberService = {
                 const aOrder = roleOrder[a.role] || 999;
                 const bOrder = roleOrder[b.role] || 999;
 
-                console.log(`Comparing: ${a.name} (${a.role} = ${aOrder}) vs ${b.name} (${b.role} = ${bOrder})`);
-
                 if (aOrder !== bOrder) {
                     return aOrder - bOrder;
                 }
@@ -118,12 +89,10 @@ export const clubMemberService = {
                 return a.name.localeCompare(b.name);
             });
 
-            console.log('=== AFTER SORTING ===');
-            transformedData.forEach((member, index) => {
-                console.log(`${index + 1}. ${member.name} - Role: "${member.role}"`);
-            });
+            // Removed: Không tự động cache ở đây, chỉ cache khi prefetch
+            // Cache chỉ được tạo trong prefetchService.js
 
-            return { success: true, data: transformedData };
+            return { success: true, data: transformedData, fromCache: false };
         } catch (error) {
             console.log('Error in getAllMembers:', error);
             return { success: false, msg: error.message, data: [] };

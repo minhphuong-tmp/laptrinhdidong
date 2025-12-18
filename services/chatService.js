@@ -1,4 +1,6 @@
 import { supabase } from "../lib/supabase";
+import deviceService from "./deviceService";
+import encryptionService from "./encryptionService";
 
 // ===== MEDIA UPLOAD =====
 export const uploadMediaFile = async (file, type = 'image') => {
@@ -19,13 +21,13 @@ export const uploadMediaFile = async (file, type = 'image') => {
         // Upload file bằng Supabase client (theo cách imageService.js)
 
         // Đọc file thành base64 (theo cách imageService.js)
-        const FileSystem = require('expo-file-system');
+        const FileSystem = require('expo-file-system/legacy');
         const { decode } = require('base64-arraybuffer');
 
         // === METRICS: Đo thời gian đọc file ===
         const readStartTime = Date.now();
         const fileBase64 = await FileSystem.readAsStringAsync(file.uri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: 'base64',
         });
         uploadMetrics.steps.readFileTime = Date.now() - readStartTime;
         uploadMetrics.steps.base64Size = fileBase64.length;
@@ -190,8 +192,13 @@ export const getConversations = async (userId, options = {}) => {
                 };
 
                 // === Lấy tin nhắn cuối ===
+                // FIX E2EE: Luôn ưu tiên sender_copy để getLastMessageContent có thể decrypt đúng
+                // Không ưu tiên receiver message vì khi ở thiết bị khác, receiver message là plaintext (không đúng)
                 const lastMsgStart = Date.now();
-                const { data: lastMessage } = await supabase
+
+                // Lấy message mới nhất - đơn giản: lấy message mới nhất bất kể sender_copy hay receiver
+                // getLastMessageContent sẽ xử lý decrypt đúng cách
+                const { data: latestMessage, error: msgError } = await supabase
                     .from('messages')
                     .select(`
                         id,
@@ -200,12 +207,22 @@ export const getConversations = async (userId, options = {}) => {
                         file_url,
                         created_at,
                         sender_id,
+                        is_encrypted,
+                        is_sender_copy,
+                        sender_device_id,
+                        encrypted_aes_key_by_pin,
                         sender:users(id, name, image)
                     `)
                     .eq('conversation_id', item.conversation_id)
                     .order('created_at', { ascending: false })
                     .limit(1)
-                    .single();
+                    .maybeSingle(); // Dùng maybeSingle để tránh lỗi khi không có message
+
+                const lastMessage = latestMessage || null;
+
+                if (msgError && msgError.code !== 'PGRST116') { // PGRST116 = no rows returned
+                    console.log('Error fetching last message:', msgError);
+                }
                 convMetrics.lastMessageTime = Date.now() - lastMsgStart;
                 metrics.queries.lastMessages++;
                 // Estimate: mỗi lastMessage với sender info ~250 bytes
@@ -299,22 +316,7 @@ export const getConversations = async (userId, options = {}) => {
             metrics.data.dataTransfer.allMessages +
             metrics.data.dataTransfer.members;
 
-        // Log metrics quan trọng để so sánh (chỉ log khi được yêu cầu)
-        if (logMetrics) {
-            console.log('=========== METRICS GET CONVERSATIONS (SQL COUNT OPTIMIZED) ===========');
-            console.log('⏱️ Tổng thời gian:', metrics.totalTime, 'ms');
-            console.log('⏱️ Promise.all (load conversations):', metrics.steps.promiseAll, 'ms');
-            console.log('⏱️ Trung bình query COUNT unread:', metrics.steps.avgAllMessagesTime, 'ms', '← ĐÃ TỐI ƯU!');
-            console.log('📊 Tổng số queries:', metrics.queries.total);
-            console.log('📊 Messages đã load:', metrics.data.totalMessagesLoaded, 'messages (KHÔNG load allMessages nữa!)');
-            console.log('📊 Data transfer:');
-            console.log('   └─ Initial query:', (metrics.data.dataTransfer.initialQuery / 1024).toFixed(2), 'KB');
-            console.log('   └─ LastMessages:', (metrics.data.dataTransfer.lastMessages / 1024).toFixed(2), 'KB');
-            console.log('   └─ COUNT unread:', (metrics.data.dataTransfer.allMessages / 1024).toFixed(2), 'KB', '← GIẢM ĐÁNG KỂ!');
-            console.log('   └─ Members:', (metrics.data.dataTransfer.members / 1024).toFixed(2), 'KB');
-            console.log('   └─ Tổng:', (metrics.data.dataTransfer.total / 1024).toFixed(2), 'KB');
-            console.log('=========== KẾT THÚC METRICS ===========');
-        }
+        // Silence metrics logs to keep output minimal for Chat List; metrics are still returned
 
         return {
             success: true,
@@ -326,6 +328,130 @@ export const getConversations = async (userId, options = {}) => {
         metrics.totalTime = Date.now() - metrics.startTime;
         metrics.error = error.message;
         return { success: false, msg: 'Không thể lấy danh sách cuộc trò chuyện', metrics };
+    }
+};
+
+// Lấy chỉ conversations mới (sau một timestamp cụ thể)
+export const getNewConversations = async (userId, sinceTimestamp, excludeIds = []) => {
+    try {
+        // Query tất cả conversation_members của user
+        const { data: allMembers, error: membersError } = await supabase
+            .from('conversation_members')
+            .select(`
+                conversation_id,
+                last_read_at,
+                conversation:conversations(
+                    id,
+                    name,
+                    type,
+                    created_at,
+                    updated_at,
+                    created_by
+                )
+            `)
+            .eq('user_id', userId);
+
+        if (membersError) {
+            console.error('Error fetching conversation members:', membersError);
+            throw membersError;
+        }
+
+        if (!allMembers || allMembers.length === 0) {
+            return [];
+        }
+
+        // Filter conversations có updated_at > sinceTimestamp
+        const conversationMembers = allMembers.filter(item => {
+            if (!item.conversation || !item.conversation.updated_at) return false;
+            return new Date(item.conversation.updated_at).getTime() > new Date(sinceTimestamp).getTime();
+        });
+
+        if (!conversationMembers || conversationMembers.length === 0) {
+            return [];
+        }
+
+        // Filter: loại bỏ các IDs đã có trong cache
+        let filteredMembers = conversationMembers;
+        if (excludeIds.length > 0) {
+            filteredMembers = conversationMembers.filter(
+                item => !excludeIds.includes(item.conversation_id)
+            );
+        }
+
+        if (filteredMembers.length === 0) {
+            return [];
+        }
+
+        // Load đầy đủ thông tin cho conversations mới (tương tự getConversations)
+        const conversationsWithMessages = await Promise.all(
+            filteredMembers.map(async (item) => {
+                // Lấy tin nhắn cuối - đơn giản: lấy message mới nhất bất kể sender_copy hay receiver
+                // getLastMessageContent sẽ xử lý decrypt đúng cách
+                const { data: latestMessage, error: msgError } = await supabase
+                    .from('messages')
+                    .select(`
+                        id,
+                        content,
+                        message_type,
+                        file_url,
+                        created_at,
+                        sender_id,
+                        is_encrypted,
+                        is_sender_copy,
+                        sender_device_id,
+                        encrypted_aes_key,
+                        encrypted_aes_key_by_pin,
+                        sender:users(id, name, image)
+                    `)
+                    .eq('conversation_id', item.conversation_id)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle(); // Dùng maybeSingle để tránh lỗi khi không có message
+
+                const lastMessage = latestMessage || null;
+
+                if (msgError && msgError.code !== 'PGRST116') { // PGRST116 = no rows returned
+                    console.log('Error fetching last message:', msgError);
+                }
+
+                // Đếm unread messages
+                const lastReadAt = item.last_read_at || new Date(0).toISOString();
+                const { count: unreadCount } = await supabase
+                    .from('messages')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('conversation_id', item.conversation_id)
+                    .gt('created_at', lastReadAt)
+                    .neq('sender_id', userId);
+
+                // Lấy thông tin thành viên
+                const { data: members } = await supabase
+                    .from('conversation_members')
+                    .select(`
+                        user_id,
+                        last_read_at,
+                        is_admin,
+                        user:users(id, name, image)
+                    `)
+                    .eq('conversation_id', item.conversation_id);
+
+                return {
+                    ...item.conversation,
+                    conversation_members: members || [],
+                    unreadCount: unreadCount || 0,
+                    lastMessage: lastMessage
+                };
+            })
+        );
+
+        // Sắp xếp theo updated_at
+        conversationsWithMessages.sort((a, b) =>
+            new Date(b.updated_at) - new Date(a.updated_at)
+        );
+
+        return conversationsWithMessages;
+    } catch (error) {
+        console.error('Error in getNewConversations:', error);
+        throw error;
     }
 };
 
@@ -401,12 +527,178 @@ export const removeMemberFromConversation = async (conversationId, userId) => {
     }
 };
 
+// ===== HELPER FUNCTIONS =====
+/**
+ * Kiểm tra message có thực sự encrypted hay không - CHỈ dựa vào METADATA, KHÔNG dựa vào format content
+ * @deprecated Use isMessageActuallyEncrypted from utils/messageValidation.js instead
+ */
+const isMessageEncrypted = (msg) => {
+    if (!msg) return false;
+
+    // Siết chặt điều kiện: Flag true PHẢI có key hợp lệ
+    if (msg.is_encrypted === true) {
+        // Kiểm tra key hợp lệ (không phải string rỗng, không phải object rỗng)
+        const hasValidKey =
+            (typeof msg.encrypted_aes_key === 'string' && msg.encrypted_aes_key.length > 0) ||
+            (typeof msg.encrypted_aes_key_by_pin === 'string' && msg.encrypted_aes_key_by_pin.length > 0) ||
+            (msg.encrypted_key_by_device && typeof msg.encrypted_key_by_device === 'object' && Object.keys(msg.encrypted_key_by_device).length > 0);
+
+        if (hasValidKey) {
+            return true;
+        } else {
+            // Flag true nhưng không có key hợp lệ → self-heal thành plaintext
+            console.warn('[E2EE Debug] Message có is_encrypted=true nhưng không có key hợp lệ:', {
+                id: msg.id,
+                is_encrypted: msg.is_encrypted,
+                encrypted_aes_key: msg.encrypted_aes_key,
+                encrypted_aes_key_by_pin: msg.encrypted_aes_key_by_pin,
+                encrypted_key_by_device: msg.encrypted_key_by_device,
+                message_type: msg.message_type,
+                is_sender_copy: msg.is_sender_copy
+            });
+            msg.is_encrypted = false;
+            return false;
+        }
+    }
+
+    // Fallback cho legacy / multi-device E2EE - chỉ nếu có key hợp lệ
+    const hasValidKey =
+        (typeof msg.encrypted_aes_key === 'string' && msg.encrypted_aes_key.length > 0) ||
+        (typeof msg.encrypted_aes_key_by_pin === 'string' && msg.encrypted_aes_key_by_pin.length > 0) ||
+        (msg.encrypted_key_by_device && typeof msg.encrypted_key_by_device === 'object' && Object.keys(msg.encrypted_key_by_device).length > 0);
+
+    if (hasValidKey) {
+        return true;
+    }
+
+    return false;
+};
+
 // ===== MESSAGES =====
 export const sendMessage = async (data) => {
     try {
+        // Kiểm tra conversation type
+        const { data: conversation, error: convError } = await supabase
+            .from('conversations')
+            .select('type')
+            .eq('id', data.conversation_id)
+            .single();
+
+        if (convError) {
+            console.log('sendMessage convError:', convError);
+            return { success: false, msg: 'Không thể lấy thông tin cuộc trò chuyện' };
+        }
+
+        // FIX: Lấy device ID - đảm bảo luôn lấy từ deviceService, không dùng cache cũ
+        const deviceId = await deviceService.getOrCreateDeviceId();
+
+        // Chỉ tạo 2 messages cho direct chat và text message
+        if (conversation?.type === 'direct' && data.message_type === 'text') {
+            try {
+                // ===== NEW ARCHITECTURE: Encrypt bằng ConversationKey =====
+                const conversationKeyService = require('./conversationKeyService').default;
+
+                // Lấy hoặc tạo ConversationKey cho conversation (đã được mã hóa bằng PIN và lưu local)
+                const conversationKey = await conversationKeyService.getOrCreateConversationKey(data.conversation_id);
+
+                if (!conversationKey) {
+                    throw new Error('Cannot get or create ConversationKey');
+                }
+
+                // Mã hóa nội dung bằng ConversationKey
+                // encryptedContent là base64 string (không cần format phức tạp như trước)
+                const encryptedContent = await encryptionService.encryptMessageWithConversationKey(
+                    data.content,
+                    conversationKey
+                );
+
+                // Tạo 2 messages: receiver (plaintext) và sender (encrypted)
+                const { data: receiverMessage, error: receiverError } = await supabase
+                    .from('messages')
+                    .insert({
+                        ...data,
+                        content: data.content, // Plaintext cho receiver
+                        is_encrypted: false,
+                        is_sender_copy: false,
+                        sender_device_id: null,
+                        encryption_version: 3 // Version 3: ConversationKey architecture
+                    })
+                    .select(`
+                        *,
+                        sender:users(id, name, image)
+                    `)
+                    .single();
+
+                if (receiverError) {
+                    console.log('sendMessage receiverError:', receiverError);
+                    return { success: false, msg: 'Không thể gửi tin nhắn' };
+                }
+
+                // FIX: Tạo sender copy (encrypted) - đảm bảo sender_device_id chính xác
+                const { data: senderMessage, error: senderError } = await supabase
+                    .from('messages')
+                    .insert({
+                        ...data,
+                        content: encryptedContent, // Encrypted cho sender
+                        is_encrypted: true,
+                        encryption_algorithm: 'AES-256-GCM',
+                        is_sender_copy: true,
+                        sender_device_id: deviceId,
+                        // NEW ARCHITECTURE: Không cần encrypted_aes_key_by_pin (PIN layer trong message)
+                        encryption_version: 3 // Version 3: ConversationKey architecture
+                    })
+                    .select(`
+                        *,
+                        sender:users(id, name, image)
+                    `)
+                    .single();
+
+                // FIX: Verify sender_device_id sau khi insert
+                if (senderMessage && senderMessage.sender_device_id) {
+                    if (senderMessage.sender_device_id !== deviceId) {
+                        console.error('[ChatService] ERROR: sender_device_id mismatch!', {
+                            expected: deviceId,
+                            actual: senderMessage.sender_device_id
+                        });
+                    }
+                }
+
+                if (senderError) {
+                    console.log('sendMessage senderError:', senderError);
+                    // Nếu lỗi sender copy, vẫn trả về receiver message
+                    // Cập nhật updated_at của conversation
+                    await supabase
+                        .from('conversations')
+                        .update({ updated_at: new Date().toISOString() })
+                        .eq('id', data.conversation_id);
+
+                    return { success: true, data: receiverMessage };
+                }
+
+                // Cập nhật updated_at của conversation
+                await supabase
+                    .from('conversations')
+                    .update({ updated_at: new Date().toISOString() })
+                    .eq('id', data.conversation_id);
+
+                // Trả về receiver message (để hiển thị cho sender nếu cần)
+                return { success: true, data: receiverMessage };
+            } catch (encryptError) {
+                console.error('Error encrypting message:', encryptError);
+                // Nếu mã hóa lỗi, gửi plaintext như bình thường
+                console.warn('Sending message as plaintext due to encryption error.');
+            }
+        }
+
+        // Nếu không phải direct chat hoặc không phải text message → gửi như bình thường (1 message)
         const { data: message, error } = await supabase
             .from('messages')
-            .insert(data)
+            .insert({
+                ...data,
+                is_encrypted: false,
+                is_sender_copy: false,
+                sender_device_id: null
+            })
             .select(`
                 *,
                 sender:users(id, name, image)
@@ -431,8 +723,14 @@ export const sendMessage = async (data) => {
     }
 };
 
-export const getMessages = async (conversationId, limit = 50, offset = 0) => {
+export const getMessages = async (conversationId, userId, limit = 50, offset = 0) => {
     try {
+        // Lấy device ID hiện tại
+        const deviceId = await deviceService.getOrCreateDeviceId();
+
+        // Query messages với filter:
+        // - is_sender_copy = false: Tất cả users đều thấy (receiver messages)
+        // - is_sender_copy = true AND sender_id = userId: Lấy sender copy từ mọi device (cả device hiện tại và device khác)
         const { data, error } = await supabase
             .from('messages')
             .select(`
@@ -444,18 +742,157 @@ export const getMessages = async (conversationId, limit = 50, offset = 0) => {
                 )
             `)
             .eq('conversation_id', conversationId)
+            .or(`is_sender_copy.eq.false,and(is_sender_copy.eq.true,sender_id.eq.${userId})`)
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
+
+        // Include encrypted_aes_key_by_pin và encryption_version trong select
+        // (Đã có trong * nhưng đảm bảo rõ ràng)
 
         if (error) {
             console.log('getMessages error:', error);
             return { success: false, msg: 'Không thể lấy tin nhắn' };
         }
 
-        return { success: true, data: data.reverse() }; // Reverse để hiển thị từ cũ đến mới
+        // Kiểm tra conversation type
+        const { data: conversation } = await supabase
+            .from('conversations')
+            .select('type')
+            .eq('id', conversationId)
+            .single();
+
+        // KHÔNG decrypt tự động - chỉ trả về encrypted content
+        // Decryption sẽ được thực hiện trong UI khi người dùng nhập PIN
+        const messagesWithDecryptionState = data.map((msg) => {
+            // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
+            if (msg.is_sender_copy === true) {
+                // sender_copy → giữ nguyên metadata, reset decryption state
+                const senderDeviceId = msg.sender_device_id;
+                const isFromCurrentDevice = senderDeviceId === deviceId;
+                const processed = {
+                    ...msg,
+                    decryptedContent: null,
+                    isDecrypted: false,
+                    decryption_error: false,
+                    encrypted_from_other_device: !isFromCurrentDevice
+                    // KHÔNG thay đổi is_encrypted (giữ nguyên từ DB)
+                    // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
+                };
+
+                return processed;
+            }
+
+            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
+            // Self-healing: Ép thành plaintext nếu flag sai
+            const processed = {
+                ...msg,
+                decryptedContent: msg.content || null,
+                isDecrypted: true,
+                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
+                // Giữ nguyên content vì đây là tin nhắn thường
+            };
+
+            return processed;
+        });
+
+        return { success: true, data: messagesWithDecryptionState.reverse() }; // Reverse để hiển thị từ cũ đến mới
     } catch (error) {
         console.log('getMessages error:', error);
         return { success: false, msg: 'Không thể lấy tin nhắn' };
+    }
+};
+
+// Lấy chỉ messages mới (sau một timestamp cụ thể)
+export const getNewMessages = async (conversationId, userId, sinceTimestamp, excludeIds = []) => {
+    try {
+        // Lấy device ID hiện tại
+        const deviceId = await deviceService.getOrCreateDeviceId();
+
+        // Query messages có created_at > sinceTimestamp với filter tương tự getMessages
+        // - is_sender_copy = false: Tất cả users đều thấy (receiver messages)
+        // - is_sender_copy = true AND sender_id = userId: Lấy sender copy từ mọi device
+        const { data: messages, error } = await supabase
+            .from('messages')
+            .select(`
+                *,
+                sender:users(id, name, image),
+                message_reads(
+                    user_id,
+                    read_at
+                )
+            `)
+            .eq('conversation_id', conversationId)
+            .gt('created_at', sinceTimestamp)
+            .or(`is_sender_copy.eq.false,and(is_sender_copy.eq.true,sender_id.eq.${userId})`)
+            .order('created_at', { ascending: false });
+
+        // Include encrypted_aes_key_by_pin và encryption_version trong select
+        // (Đã có trong * nhưng đảm bảo rõ ràng)
+
+        if (error) {
+            console.error('Error fetching new messages:', error);
+            throw error;
+        }
+
+        // Filter: loại bỏ các IDs đã có trong cache
+        let filteredMessages = messages;
+        if (messages && messages.length > 0 && excludeIds.length > 0) {
+            filteredMessages = messages.filter(m => !excludeIds.includes(m.id));
+        }
+
+        if (!filteredMessages || filteredMessages.length === 0) {
+            return [];
+        }
+
+        // KHÔNG decrypt tự động - chỉ trả về encrypted content
+        // Decryption sẽ được thực hiện trong UI khi người dùng nhập PIN
+        const messagesWithDecryptionState = filteredMessages.map((msg) => {
+            // DEBUG: Log raw message để xác định metadata
+            if (msg.message_type === 'text' && !msg.is_sender_copy) {
+                console.log('[E2EE Debug] getNewMessages() - Raw plaintext message:', JSON.stringify({
+                    id: msg.id,
+                    is_encrypted: msg.is_encrypted,
+                    encrypted_aes_key: msg.encrypted_aes_key,
+                    encrypted_aes_key_by_pin: msg.encrypted_aes_key_by_pin,
+                    encrypted_key_by_device: msg.encrypted_key_by_device,
+                    message_type: msg.message_type,
+                    is_sender_copy: msg.is_sender_copy,
+                    sender_id: msg.sender_id,
+                    content_preview: msg.content ? msg.content.substring(0, 50) : null
+                }, null, 2));
+            }
+
+            // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
+            if (msg.is_sender_copy === true) {
+                // sender_copy → giữ nguyên metadata, reset decryption state
+                const senderDeviceId = msg.sender_device_id;
+                const isFromCurrentDevice = senderDeviceId === deviceId;
+                return {
+                    ...msg,
+                    decryptedContent: null,
+                    isDecrypted: false,
+                    decryption_error: false,
+                    encrypted_from_other_device: !isFromCurrentDevice
+                    // KHÔNG thay đổi is_encrypted (giữ nguyên từ DB)
+                    // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
+                };
+            }
+            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
+            // Self-healing: Ép thành plaintext nếu flag sai
+            return {
+                ...msg,
+                decryptedContent: msg.content || null,
+                isDecrypted: true,
+                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
+                // Giữ nguyên content vì đây là tin nhắn thường
+            };
+        });
+
+        // Reverse để hiển thị từ cũ đến mới
+        return messagesWithDecryptionState.reverse();
+    } catch (error) {
+        console.error('Error in getNewMessages:', error);
+        throw error;
     }
 };
 

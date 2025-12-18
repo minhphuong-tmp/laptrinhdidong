@@ -19,7 +19,6 @@ export const saveConversationsCache = async (userId, conversations) => {
             timestamp: Date.now()
         };
         await AsyncStorage.setItem(cacheKey, JSON.stringify(cacheData));
-        console.log('💾 [Cache] Đã lưu conversations:', conversations.length, 'items');
     } catch (error) {
         console.log('💾 [Cache] Lỗi khi lưu cache:', error);
     }
@@ -34,7 +33,7 @@ export const loadConversationsCache = async (userId) => {
         const cachedData = await AsyncStorage.getItem(cacheKey);
 
         if (!cachedData) {
-            console.log('💾 [Cache] Không có cache');
+            // No cache
             return null;
         }
 
@@ -43,15 +42,14 @@ export const loadConversationsCache = async (userId) => {
 
         // Kiểm tra cache còn hiệu lực không (5 phút)
         if (age > CACHE_EXPIRY_MS) {
-            console.log('💾 [Cache] Cache đã hết hạn:', Math.round(age / 1000), 'giây');
+            // Cache expired
             await AsyncStorage.removeItem(cacheKey); // Xóa cache cũ
             return null;
         }
 
-        console.log('💾 [Cache] Đã load từ cache:', conversations.length, 'items, tuổi:', Math.round(age / 1000), 'giây');
         return conversations;
     } catch (error) {
-        console.log('💾 [Cache] Lỗi khi load cache:', error);
+        // Silent on cache load error
         return null;
     }
 };
@@ -63,9 +61,8 @@ export const clearConversationsCache = async (userId) => {
     try {
         const cacheKey = getCacheKey(userId);
         await AsyncStorage.removeItem(cacheKey);
-        console.log('💾 [Cache] Đã xóa cache');
     } catch (error) {
-        console.log('💾 [Cache] Lỗi khi xóa cache:', error);
+        // Silent on cache clear error
     }
 };
 

@@ -1,6 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Alert,
     FlatList,
@@ -15,6 +14,7 @@ import UserAvatar from '../../components/UserAvatar';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
+import { supabase } from '../../lib/supabase';
 import { notificationService } from '../../services/notificationService';
 
 const PersonalNotifications = () => {
@@ -25,6 +25,7 @@ const PersonalNotifications = () => {
     const [refreshing, setRefreshing] = useState(false);
     const [selectedFilter, setSelectedFilter] = useState('all');
     const [notificationCount, setNotificationCount] = useState(0);
+    const subscriptionRef = useRef(null);
 
     // Helper function để format thời gian
     const formatTimeAgo = (dateString) => {
@@ -53,7 +54,103 @@ const PersonalNotifications = () => {
         loadNotifications();
     }, []);
 
-    const loadNotifications = async () => {
+    // Setup realtime subscription để update notifications realtime
+    useEffect(() => {
+        if (!user?.id) return;
+
+
+
+        // Cleanup existing subscriptions
+        if (subscriptionRef.current) {
+            if (subscriptionRef.current.channel) {
+                subscriptionRef.current.channel.unsubscribe();
+            }
+            if (subscriptionRef.current.channelSnakeCase) {
+                subscriptionRef.current.channelSnakeCase.unsubscribe();
+            }
+        }
+
+        // Handler cho notification mới - chỉ cập nhật unread count, không động vào cache
+        const handleNewNotification = async (payload) => {
+            console.log(' [PersonalNotifications] Realtime: Có notification mới, chỉ cập nhật unread count...');
+
+            // Chỉ tăng unread count, không động vào cache
+            // Cache sẽ được cập nhật khi vào màn hình (fetch dữ liệu mới + merge với cache cũ)
+            setNotificationCount(prevCount => {
+                const newCount = prevCount + 1;
+                console.log(`   Unread count: ${prevCount} → ${newCount}`);
+                return newCount;
+            });
+        };
+
+        // Thử subscription với receiverId (camelCase)
+        const channel = supabase
+            .channel(`personal-notifications-${user.id}`)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiverId=eq.${user.id}`
+            }, handleNewNotification)
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiverId=eq.${user.id}`
+            }, (payload) => {
+                // Khi notification được update (mark as read), update local state ngay
+                const isRead = payload.new?.isRead !== undefined ? payload.new.isRead : payload.new?.is_read;
+                const oldIsRead = payload.old?.isRead !== undefined ? payload.old.isRead : payload.old?.is_read;
+
+                if (isRead !== undefined) {
+                    setNotifications(prev =>
+                        prev.map(n =>
+                            n.id === payload.new.id
+                                ? { ...n, isRead: isRead }
+                                : n
+                        )
+                    );
+                    // Update count
+                    if (isRead && !oldIsRead) {
+                        // Đã đánh dấu đã đọc
+                        setNotificationCount(prev => Math.max(0, prev - 1));
+                    } else if (!isRead && oldIsRead) {
+                        // Đã đánh dấu chưa đọc (ít khi xảy ra)
+                        setNotificationCount(prev => prev + 1);
+                    }
+                } else {
+                    // Nếu không có isRead trong payload, reload toàn bộ
+                    loadNotifications();
+                }
+            })
+            .subscribe();
+
+        // Thử subscription với receiver_id (snake_case) nếu receiverId không hoạt động
+        const channelSnakeCase = supabase
+            .channel(`personal-notifications-snake-${user.id}`)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiver_id=eq.${user.id}`
+            }, handleNewNotification)
+            .subscribe();
+
+        subscriptionRef.current = { channel, channelSnakeCase };
+
+        return () => {
+            if (subscriptionRef.current) {
+                if (subscriptionRef.current.channel) {
+                    subscriptionRef.current.channel.unsubscribe();
+                }
+                if (subscriptionRef.current.channelSnakeCase) {
+                    subscriptionRef.current.channelSnakeCase.unsubscribe();
+                }
+            }
+        };
+    }, [user?.id]);
+
+    const loadNotifications = async (useCache = true) => {
         try {
             setLoading(true);
             if (!user?.id) {
@@ -61,20 +158,154 @@ const PersonalNotifications = () => {
                 return;
             }
 
-            const data = await notificationService.getPersonalNotifications(user.id);
+            // Load từ cache trước (nếu có)
+            let fromCache = false;
+            let cached = null;
+            if (useCache) {
+                const { loadPersonalNotificationsCache } = require('../../utils/cacheHelper');
+                const cacheStartTime = Date.now();
+                cached = await loadPersonalNotificationsCache(user.id);
+                if (cached && cached.data && cached.data.length > 0) {
+                    fromCache = true;
+                    const dataSize = JSON.stringify(cached.data).length;
+                    const dataSizeKB = (dataSize / 1024).toFixed(2);
+                    const loadTime = Date.now() - cacheStartTime;
+                    const cacheCount = cached.data.length;
+                    console.log(`Load dữ liệu từ cache: personalNotifications (${cacheCount} notifications)`);
+                    console.log(`- Dữ liệu đã load: ${cached.data.length} notifications (${dataSizeKB} KB)`);
+                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                    // Có cache, hiển thị ngay
+                    const transformedData = cached.data.map(notification => {
+                        // Transform logic giống như bên dưới
+                        let postId = notification.postId || null;
+                        let commentId = notification.commentId || null;
+                        if (!postId && !commentId && notification.message) {
+                            try {
+                                if (typeof notification.message === 'string' && notification.message.trim().startsWith('{')) {
+                                    const parsedData = JSON.parse(notification.message);
+                                    postId = parsedData.postId || null;
+                                    commentId = parsedData.commentId || null;
+                                }
+                            } catch (e) {
+                                // Silent
+                            }
+                        }
+                        let type = 'notification';
+                        if (notification.title && notification.title.includes('thích')) type = 'like';
+                        else if (notification.title && notification.title.includes('bình luận')) type = 'comment';
+                        else if (notification.title && notification.title.includes('gắn thẻ')) type = 'tag';
+                        else if (notification.title && notification.title.includes('theo dõi')) type = 'follow';
+                        const title = notification.title || 'Thông báo mới';
+                        return {
+                            id: notification.id,
+                            type: type,
+                            title: title,
+                            description: postId ? `Bài viết #${postId}` : (notification.content || 'Không có nội dung'),
+                            time: formatTimeAgo(notification.created_at),
+                            isRead: notification.isRead || notification.is_read || false,
+                            postId: postId,
+                            commentId: commentId,
+                            originalType: notification.type || type,
+                            user: {
+                                id: notification.sender?.id || notification.senderId || 'system',
+                                name: notification.sender?.name || (notification.senderId ? 'Người dùng' : 'Hệ thống'),
+                                image: notification.sender?.image || null
+                            }
+                        };
+                    });
+                    setNotifications(transformedData);
+                    const unreadCount = transformedData.filter(n => !n.isRead).length;
+                    setNotificationCount(unreadCount);
+                    setLoading(false);
+                }
+            }
+
+            // Fetch dữ liệu mới (chỉ fetch nếu có cache, hoặc fetch toàn bộ nếu không có cache)
+            let data;
+            if (fromCache && cached && cached.data && cached.data.length > 0) {
+                const cacheCount = cached.data.length;
+                const cacheAge = Date.now() - cached.timestamp;
+                const cacheAgeSeconds = Math.floor(cacheAge / 1000);
+
+                // Luôn fetch dữ liệu mới để merge với cache cũ
+                const latestNotificationTime = cached.data[0].created_at;
+                const cacheIds = cached.data.map(n => n.id);
+                const cacheLatestTime = new Date(latestNotificationTime).getTime();
+
+                try {
+                    const newNotifications = await notificationService.getNewPersonalNotifications(user.id, latestNotificationTime, cacheIds);
+                    const newCount = newNotifications ? newNotifications.length : 0;
+
+                    // Luôn log số lượng từ CSDL (kể cả 0)
+                    console.log(`Load từ CSDL: ${newCount} notifications`);
+
+                    if (newNotifications && newNotifications.length > 0) {
+                        // Filter: không có trong cache VÀ có created_at > cache latest time
+                        const existingIds = new Set(cached.data.map(n => n.id));
+                        const uniqueNewNotifications = newNotifications.filter(n => {
+                            const nTime = new Date(n.created_at).getTime();
+                            return !existingIds.has(n.id) && nTime > cacheLatestTime;
+                        });
+
+                        if (uniqueNewNotifications.length > 0) {
+                            const totalCount = uniqueNewNotifications.length + cacheCount;
+                            console.log(`Cache: ${cacheCount} notifications`);
+                            console.log(`Tổng dữ liệu: ${totalCount} notifications`);
+
+                            // Gộp notifications mới với cache cũ để hiển thị (KHÔNG update cache)
+                            data = [...uniqueNewNotifications, ...cached.data].sort((a, b) =>
+                                new Date(b.created_at) - new Date(a.created_at)
+                            );
+                        } else {
+                            console.log(`Tổng dữ liệu: ${cacheCount} notifications`);
+                            data = cached.data;
+                        }
+                    } else {
+                        console.log(`Tổng dữ liệu: ${cacheCount} notifications`);
+                        data = cached.data;
+                    }
+                } catch (error) {
+                    console.error('[PersonalNotifications] Lỗi khi fetch dữ liệu mới:', error);
+                    console.log(`Load từ CSDL: 0 notifications`);
+                    console.log(`Tổng dữ liệu: ${cacheCount} notifications`);
+                    data = cached.data;
+                }
+            } else {
+                // Không có cache → fetch toàn bộ
+                console.log('Load dữ liệu từ CSDL: personalNotifications');
+                data = await notificationService.getPersonalNotifications(user.id, false);
+                if (data && data.length > 0) {
+                    console.log(`Load từ CSDL: ${data.length} notifications`);
+                    console.log(`Tổng dữ liệu: ${data.length} notifications`);
+                } else {
+                    console.log(`Load từ CSDL: 0 notifications`);
+                    console.log(`Tổng dữ liệu: 0 notifications`);
+                }
+            }
 
             // Transform data để phù hợp với UI
             const transformedData = data.map(notification => {
-                // Parse message JSON để lấy thông tin chi tiết (postId, commentId)
-                let parsedData = {};
-                try {
-                    // Thử parse từ message field
-                    if (notification.message) {
-                        parsedData = JSON.parse(notification.message);
+                // Debug: Log chỉ những field cần thiết (tránh log object quá lớn)
+                if (notification.id) {
+
+                }
+
+                // Lấy postId và commentId từ notification
+                // Ưu tiên: postId/commentId column > message field (fallback cho notification cũ)
+                let postId = notification.postId || null;
+                let commentId = notification.commentId || null;
+
+                // Fallback: Nếu không có postId/commentId column, thử parse từ message (cho notification cũ)
+                if (!postId && !commentId && notification.message) {
+                    try {
+                        if (typeof notification.message === 'string' && notification.message.trim().startsWith('{')) {
+                            const parsedData = JSON.parse(notification.message);
+                            postId = parsedData.postId || null;
+                            commentId = parsedData.commentId || null;
+                        }
+                    } catch (e) {
+                        console.log('🔔 [PersonalNotifications] Error parsing message (fallback):', e);
                     }
-                } catch (e) {
-                    console.log('Error parsing notification message:', e);
-                    console.log('Notification:', notification);
                 }
 
                 // Xác định type dựa trên title
@@ -111,33 +342,44 @@ const PersonalNotifications = () => {
                     }
                 }
 
+                // Debug log
+                if (postId) {
+                } else {
+                }
+
                 return {
                     id: notification.id,
                     type: type,
                     title: title,
-                    description: parsedData.postId ? `Bài viết #${parsedData.postId}` : (notification.content || 'Không có nội dung'),
+                    description: postId ? `Bài viết #${postId}` : (notification.content || 'Không có nội dung'),
                     time: formatTimeAgo(notification.created_at),
-                    isRead: notification.is_read || false,
-                    postId: parsedData.postId || null,
-                    commentId: parsedData.commentId || null,
+                    isRead: notification.isRead || notification.is_read || false,
+                    postId: postId,
+                    commentId: commentId,
+                    originalType: notification.type || type, // Lưu type gốc từ database, fallback về type đã xác định
                     user: {
-                        id: notification.sender?.id || notification.senderId || 'system', // Sửa: senderId thay vì sender_id
-                        name: notification.sender?.name || (notification.senderId ? 'Người dùng' : 'Hệ thống'), // Sửa: senderId thay vì sender_id
+                        id: notification.sender?.id || notification.senderId || 'system',
+                        name: notification.sender?.name || (notification.senderId ? 'Người dùng' : 'Hệ thống'),
                         image: notification.sender?.image || null
                     }
                 };
             });
 
+            // Update UI với dữ liệu đã transform
             setNotifications(transformedData);
-
-            // Cập nhật notificationCount dựa trên số thông báo chưa đọc
+            // Luôn cập nhật notificationCount dựa trên số thông báo chưa đọc
             const unreadCount = transformedData.filter(n => !n.isRead).length;
             setNotificationCount(unreadCount);
+
+            if (!fromCache) {
+                setLoading(false);
+            }
         } catch (error) {
             console.error('Error loading notifications:', error);
-            Alert.alert('Lỗi', 'Không thể tải thông báo');
-        } finally {
-            setLoading(false);
+            if (!fromCache) {
+                Alert.alert('Lỗi', 'Không thể tải thông báo');
+                setLoading(false);
+            }
         }
     };
 
@@ -156,13 +398,78 @@ const PersonalNotifications = () => {
 
     const handleNotificationPress = async (notification) => {
         try {
+
+
+            // Check nếu là thông báo về lịch CLB (club_announcement, event_reminder, meeting, workshop, activity)
+            const isClubNotification = notification.originalType === 'club_announcement' ||
+                notification.originalType === 'event_reminder' ||
+                notification.originalType === 'meeting' ||
+                notification.originalType === 'workshop' ||
+                notification.originalType === 'activity' ||
+                notification.title?.toLowerCase().includes('clb') ||
+                notification.title?.toLowerCase().includes('lịch') ||
+                notification.title?.toLowerCase().includes('sự kiện');
+
+            // Nếu là thông báo CLB, navigate đến màn hình thông báo CLB
+            if (isClubNotification) {
+                // Đánh dấu đã đọc nếu chưa đọc
+                if (!notification.isRead) {
+                    const result = await notificationService.markAsRead(notification.id);
+                    if (!result.success) {
+                        console.log('Failed to mark notification as read:', result.message);
+                    }
+
+                    // Cập nhật state local
+                    setNotifications(prev =>
+                        prev.map(n =>
+                            n.id === notification.id
+                                ? { ...n, isRead: true }
+                                : n
+                        )
+                    );
+
+                    // Giảm số thông báo chưa đọc
+                    setNotificationCount(prev => Math.max(0, prev - 1));
+                }
+
+                // Navigate đến màn hình thông báo CLB với highlight notification
+                router.push({
+                    pathname: 'notifications',
+                    params: {
+                        highlightNotificationId: String(notification.id)
+                    }
+                });
+                return;
+            }
+
+            // Nếu đã đọc rồi, chỉ điều hướng nếu có postId (không mark lại)
+            if (notification.isRead) {
+                if (notification.postId) {
+                    const params = {
+                        postId: String(notification.postId)
+                    };
+                    if (notification.commentId) {
+                        params.commentId = String(notification.commentId);
+                    }
+                    router.push({
+                        pathname: 'postDetails',
+                        params: params
+                    });
+                } else {
+                    console.log('🔔 [PersonalNotifications] Already read but no postId, going back');
+                    router.back();
+                }
+                return;
+            }
+
             // Đánh dấu thông báo đã đọc
             const result = await notificationService.markAsRead(notification.id);
 
             if (!result.success) {
+                console.log('Failed to mark notification as read:', result.message);
             }
 
-            // Cập nhật state local
+            // Cập nhật state local ngay lập tức
             setNotifications(prev =>
                 prev.map(n =>
                     n.id === notification.id
@@ -171,34 +478,31 @@ const PersonalNotifications = () => {
                 )
             );
 
-            // Giảm số thông báo chưa đọcma
+            // Giảm số thông báo chưa đọc
             setNotificationCount(prev => Math.max(0, prev - 1));
 
-            // Điều hướng đến bài viết nếu có postId
+            // Điều hướng đến bài viết nếu có postId (cho cả like và comment)
             if (notification.postId) {
-                // Lưu postId vào AsyncStorage để home có thể đọc (convert to string)
-                await AsyncStorage.setItem('scrollToPostId', String(notification.postId));
+                // Đợi một chút để đảm bảo database đã update xong
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // Navigate trực tiếp đến postDetails screen
+                // Nếu có commentId, sẽ scroll đến comment đó
+                const params = {
+                    postId: String(notification.postId)
+                };
                 if (notification.commentId) {
-                    await AsyncStorage.setItem('scrollToCommentId', String(notification.commentId));
+                    params.commentId = String(notification.commentId);
                 }
 
-                // Quay về home
-                router.back();
-
-                Alert.alert(
-                    'Chuyển đến bài viết',
-                    notification.commentId
-                        ? `Đang chuyển đến bình luận trong bài viết #${notification.postId}`
-                        : `Đang chuyển đến bài viết #${notification.postId}`,
-                    [{ text: 'OK' }]
-                );
+                // Dùng pathname tương đối cho expo-router
+                router.push({
+                    pathname: 'postDetails',
+                    params: params
+                });
             } else {
-                // Nếu không có postId, chỉ đánh dấu đã đọc
-                Alert.alert(
-                    'Thông báo',
-                    'Thông báo đã được đánh dấu đã đọc',
-                    [{ text: 'OK' }]
-                );
+                // Nếu không có postId, chỉ đánh dấu đã đọc và quay lại
+                router.back();
             }
         } catch (error) {
             console.error('Error handling notification press:', error);
@@ -212,21 +516,35 @@ const PersonalNotifications = () => {
             );
             setNotificationCount(prev => Math.max(0, prev - 1));
 
-            // Thử lưu postId nếu có (với error handling)
-            if (notification.postId) {
+            // Check nếu là thông báo CLB
+            const isClubNotification = notification.originalType === 'club_announcement' ||
+                notification.originalType === 'event_reminder' ||
+                notification.originalType === 'meeting' ||
+                notification.originalType === 'workshop' ||
+                notification.originalType === 'activity' ||
+                notification.title?.toLowerCase().includes('clb') ||
+                notification.title?.toLowerCase().includes('lịch') ||
+                notification.title?.toLowerCase().includes('sự kiện');
+
+            if (isClubNotification) {
+                router.push('notifications');
+            } else if (notification.postId) {
                 try {
-                    await AsyncStorage.setItem('scrollToPostId', String(notification.postId));
-                    if (notification.commentId) {
-                        await AsyncStorage.setItem('scrollToCommentId', String(notification.commentId));
-                    }
-                    router.back();
-                } catch (storageError) {
-                    console.log('Error saving to AsyncStorage:', storageError);
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    router.push({
+                        pathname: 'postDetails',
+                        params: {
+                            postId: String(notification.postId),
+                            ...(notification.commentId && { commentId: String(notification.commentId) })
+                        }
+                    });
+                } catch (error) {
+                    console.log('Error navigating to post:', error);
                     router.back();
                 }
+            } else {
+                router.back();
             }
-
-            Alert.alert('Thông báo', 'Thông báo đã được đánh dấu đã đọc');
         }
     };
 

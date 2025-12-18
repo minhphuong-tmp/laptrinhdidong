@@ -66,6 +66,4 @@ if (typeof global.CustomEvent === 'undefined') {
     };
 }
 
-console.log('WebRTC polyfills loaded');
-
 

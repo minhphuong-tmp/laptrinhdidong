@@ -3,6 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Animated,
+    AppState,
     FlatList,
     Modal,
     Pressable,
@@ -28,20 +29,57 @@ import Loading from '../../components/Loading';
 import PostCard from '../../components/PostCard';
 import UserAvatar from '../../components/UserAvatar';
 import { notificationService } from '../../services/notificationService';
+import { predictionService } from '../../services/predictionService';
+import { prefetchService } from '../../services/prefetchService';
+import { unreadService } from '../../services/unreadService';
 import { getUserData } from '../../services/userService';
 var limit = 0;
 const Home = () => {
     const { user, setAuth } = useAuth();
     const router = useRouter();
 
-    // Lấy tên từ user_metadata
-    const userName = user?.user_metadata?.name || user?.name || 'Unknown User';
+    // Lấy tên từ user_metadata hoặc database
+    const [userInfo, setUserInfo] = useState(null);
+
+    // Fetch user info from database
+    useEffect(() => {
+        const fetchUserInfo = async () => {
+            if (user?.id) {
+                try {
+                    const { data, error } = await supabase
+                        .from('users')
+                        .select('name, email, image')
+                        .eq('id', user.id)
+                        .single();
+
+                    if (!error && data) {
+                        setUserInfo(data);
+                    }
+                } catch (error) {
+                    console.log('Error fetching user info:', error);
+                }
+            }
+        };
+
+        fetchUserInfo();
+    }, [user?.id]);
+
+    // Lấy tên từ database, user_metadata, hoặc user object
+    const userName = userInfo?.name || user?.user_metadata?.name || user?.name || 'User';
 
     // States
     const [hasMore, setHasMore] = useState(true);
     const [notificationCount, setNotificationCount] = useState(0);
+    const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
     const [scrollToPostId, setScrollToPostId] = useState(null);
     const [posts, setPosts] = useState([]);
+    const behaviorLoggedRef = useRef(false); // Track đã log behavior chưa
+    const appStateRef = useRef(AppState.currentState); // Track app state
+    const isAppRestartRef = useRef(false); // Track nếu app vừa được mở lại
+    const hasPrefetchedRef = useRef(false); // Track đã prefetch chưa (chỉ prefetch 1 lần trong session)
+    const hasPrefetchedCheckedRef = useRef(false); // Track đã check AsyncStorage chưa
+    const shouldPrefetchRef = useRef(false); // Flag để trigger prefetch khi app quay lại
+    const cacheClearedOnMountRef = useRef(false); // Track đã xóa cache khi mount chưa
     const flatListRef = useRef(null);
     const [comment, setComment] = useState(0);
     const [showMenu, setShowMenu] = useState(false);
@@ -153,39 +191,119 @@ const Home = () => {
     };
 
     const handleNewNotification = async (payload) => {
-        console.log('got new notification', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
+            // Chỉ cập nhật unread count, KHÔNG động vào cache
+            // Cache sẽ được cập nhật khi vào màn hình PersonalNotifications
             setNotificationCount(prevCount => prevCount + 1);
-            // Reload notifications để có dữ liệu mới nhất
+        }
+    }
+
+    const handleNotificationUpdate = async (payload) => {
+        // Khi notification được update (thường là is_read thay đổi), reload để update count
+        if (payload.eventType === 'UPDATE' && payload.new?.id) {
+            // Reload notifications để cập nhật count chính xác
             loadNotifications();
         }
-
     }
 
     // Load notifications từ database
     const loadNotifications = async () => {
-        if (!user?.id) return;
+        if (!user?.id) return 0;
 
         try {
             const data = await notificationService.getPersonalNotifications(user.id);
             setNotifications(data);
 
-            // Đếm số thông báo chưa đọc (mặc định tất cả đều chưa đọc vì không có trường is_read)
-            // TODO: Khi có trường is_read, thay đổi logic này
-            const unreadCount = data.length;
+            // Đếm số thông báo chưa đọc (filter isRead = false)
+            const unreadCount = data.filter(notification => !(notification.isRead || notification.is_read)).length;
             setNotificationCount(unreadCount);
+            return unreadCount;
         } catch (error) {
             console.log('Error in loadNotifications:', error);
             // Fallback: set empty array nếu có lỗi
             setNotifications([]);
             setNotificationCount(0);
+            return 0;
         }
     };
 
-    // Reload notifications khi quay lại từ personalNotifications
+    // Load unread messages count
+    const loadUnreadMessagesCount = async () => {
+        if (!user?.id) {
+            return 0;
+        }
+
+        try {
+            const count = await unreadService.getUnreadMessagesCount(user.id);
+            const finalCount = count || 0;
+            setUnreadMessagesCount(finalCount);
+            return finalCount;
+        } catch (error) {
+            setUnreadMessagesCount(0);
+            return 0;
+        }
+    };
+
+    // Reload notifications và unread messages count khi quay lại từ personalNotifications
     useFocusEffect(
         useCallback(() => {
-            loadNotifications();
+            // Kiểm tra user trước khi truy cập user.id
+            if (!user?.id) return;
+
+            // Chỉ reload unread count từ database, KHÔNG reload toàn bộ notifications
+            // (vì reload từ cache sẽ làm mất unread count từ realtime)
+            Promise.all([
+                unreadService.getUnreadNotificationsCount(user.id), // Chỉ lấy unread count, không reload notifications
+                loadUnreadMessagesCount()
+            ]).then(([unreadNotificationsCount, unreadMessagesCount]) => {
+                // Cập nhật unread count từ database (không reload toàn bộ notifications)
+                setNotificationCount(unreadNotificationsCount || 0);
+            });
+
+            // Check cache hiện tại khi quay lại home (không cache lại)
+            const checkCacheOnFocus = async () => {
+                // Kiểm tra user trước khi truy cập user.id
+                if (!user?.id) return;
+
+                try {
+                    // Log hành vi người dùng từ bảng user_behavior
+                    try {
+                        const { data: userBehavior, error: behaviorError } = await supabase
+                            .from('user_behavior')
+                            .select('screen_name, visit_count')
+                            .eq('user_id', user.id)
+                            .order('visit_count', { ascending: false });
+
+                        if (!behaviorError && userBehavior && userBehavior.length > 0) {
+                            // Format: loại bỏ 'home' và tạo object JSON
+                            const behaviorObject = {};
+                            userBehavior
+                                .filter(item => item.screen_name !== 'home')
+                                .forEach(item => {
+                                    behaviorObject[item.screen_name] = item.visit_count;
+                                });
+
+                            if (Object.keys(behaviorObject).length > 0) {
+                                console.log(` [Hành vi người dùng]:`, JSON.stringify(behaviorObject, null, 2));
+                            }
+                        }
+                    } catch (e) {
+                        // Silent
+                    }
+
+                    // Log cache hiện tại
+                    await prefetchService.checkCurrentCache(user.id);
+                } catch (error) {
+                    console.log('[Home] Error checking cache:', error);
+                }
+            };
+
+            // Delay một chút để không block UI
+            const timer = setTimeout(() => {
+                checkCacheOnFocus();
+            }, 500);
+
+            return () => clearTimeout(timer);
         }, [user?.id])
     );
 
@@ -272,7 +390,6 @@ const Home = () => {
         }, [posts])
     );
     const handleNewComment = async (payload) => {
-        console.log('got new comment123', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
             setPosts(prevPosts => {
                 return prevPosts.map(post => {
@@ -292,7 +409,6 @@ const Home = () => {
                             // Thêm comment mới
                             updatedComments.push(payload.new);
                         }
-                        console.log('Post comments sau khi update:', updatedComments);
 
                         return {
                             ...post,
@@ -346,7 +462,6 @@ const Home = () => {
         });
         subscriptionsRef.current = {};
 
-        console.log('Setting up home subscriptions for user:', user.id);
 
         const postChannel = supabase
             .channel(`posts-${user.id}`)
@@ -367,14 +482,20 @@ const Home = () => {
                 event: 'INSERT',
                 schema: 'public',
                 table: 'notifications',
-                filter: `receiver_id=eq.${user.id}`
-
+                filter: `receiverId=eq.${user.id}`
             }, (payload) => {
-                handleNewNotification(payload)
+                handleNewNotification(payload);
             })
-            .subscribe((status) => {
-                console.log('notificationChanel status:', status)
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiverId=eq.${user.id}`
+            }, (payload) => {
+                // Khi có notification được update (mark as read), reload để update count
+                handleNotificationUpdate(payload);
             })
+            .subscribe()
 
         const commentChannel = supabase
             .channel(`comments-${user.id}`)
@@ -398,7 +519,9 @@ const Home = () => {
         };
 
         return () => {
-            console.log('Cleaning up home subscriptions for user:', user.id);
+            if (user?.id) {
+                console.log('Cleaning up home subscriptions for user:', user.id);
+            }
             Object.values(subscriptionsRef.current).forEach(channel => {
                 if (channel && typeof channel.unsubscribe === 'function') {
                     channel.unsubscribe();
@@ -408,13 +531,219 @@ const Home = () => {
         }
     }, [user?.id])
 
+    // Xóa cache khi app reload (mount lần đầu)
+    useEffect(() => {
+        if (!user?.id || cacheClearedOnMountRef.current) return;
+
+        const clearCacheOnReload = async () => {
+            try {
+                const { clearAllCache } = require('../../utils/cacheHelper');
+                await clearAllCache(user.id);
+                // Reset prefetch flag để prefetch lại sau khi reload
+                hasPrefetchedRef.current = false;
+                hasPrefetchedCheckedRef.current = false;
+                await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
+                cacheClearedOnMountRef.current = true; // Đánh dấu đã xóa cache
+                console.log('[Home] Đã xóa cache và reset prefetch flag khi reload app');
+            } catch (error) {
+                console.log('[Home] Lỗi khi xóa cache khi reload:', error);
+            }
+        };
+
+        clearCacheOnReload();
+    }, [user?.id]); // Chỉ chạy 1 lần khi user.id thay đổi (reload app)
+
     // Load posts when component mounts
     useEffect(() => {
         if (user?.id) {
             getPosts();
-            loadNotifications();
+
+            // Load và đợi cả hai hàm hoàn thành trước khi log
+            Promise.all([
+                loadNotifications(),
+                loadUnreadMessagesCount()
+            ]);
         }
     }, [user?.id]);
+
+    // Detect app state change: clear cache khi thoát app, prefetch lại khi vào lại
+    useEffect(() => {
+        if (!user?.id) return;
+
+        const subscription = AppState.addEventListener('change', async (nextAppState) => {
+            const previousState = appStateRef.current;
+            appStateRef.current = nextAppState;
+
+            // Khi app chuyển sang background hoặc inactive → clear cache và reset prefetch flag
+            if (previousState === 'active' && (nextAppState === 'background' || nextAppState === 'inactive')) {
+                console.log('[Home] App chuyển sang background, đang xóa cache...');
+                try {
+                    const { clearAllCache } = require('../../utils/cacheHelper');
+                    await clearAllCache(user.id);
+                    // Reset prefetch flag để prefetch lại khi vào app
+                    hasPrefetchedRef.current = false;
+                    hasPrefetchedCheckedRef.current = false;
+                    await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
+                    console.log('[Home] Đã xóa cache và reset prefetch flag');
+                } catch (error) {
+                    console.log('[Home] Lỗi khi xóa cache:', error);
+                }
+            }
+
+            // Khi app quay lại active → prefetch lại cache
+            if (previousState !== 'active' && nextAppState === 'active') {
+                console.log('[Home] App quay lại active, sẽ prefetch lại cache...');
+                // Reset flag để prefetch lại
+                hasPrefetchedRef.current = false;
+                hasPrefetchedCheckedRef.current = false;
+                shouldPrefetchRef.current = true; // Trigger prefetch
+
+
+                if (posts.length > 0) {
+
+                    setTimeout(() => {
+
+                        const triggerPrefetch = async () => {
+                            try {
+                                const unreadMessagesCount = await unreadService.getUnreadMessagesCount(user.id);
+                                const unreadNotificationsCount = await unreadService.getUnreadNotificationsCount(user.id);
+                                const prefetchScreens = [];
+                                if (unreadMessagesCount > 0) {
+                                    prefetchScreens.push({ screen: 'chatList', priority: 1 });
+                                }
+                                if (unreadNotificationsCount > 0) {
+                                    prefetchScreens.push({ screen: 'personalNotifications', priority: 1 });
+                                }
+                                const predictions = await predictionService.getPredictions(user.id);
+
+                                //lấy ra các màn hình đã unread load ở prefetchscreen
+                                const existingScreens = new Set(prefetchScreens.map(p => p.screen));
+
+
+                                const topPredictions = predictions
+                                    .filter(p => !existingScreens.has(p.screen))
+                                    .slice(0, 3 - prefetchScreens.length);
+                                //gộp lại và chỉ lấy tối đa 3 màn hình
+                                const finalPrefetch = [...prefetchScreens, ...topPredictions].slice(0, 3);
+                                hasPrefetchedRef.current = true;
+
+                                await AsyncStorage.setItem(`hasPrefetched_${user.id}`, 'true');
+
+                                prefetchService.smartPrefetch(user.id, finalPrefetch);
+                            } catch (error) {
+                                console.log('[Home] Error triggering prefetch on app resume:', error);
+                            }
+                        };
+                        triggerPrefetch();
+                    }, 500);
+                }
+            }
+        });
+
+        return () => {
+            subscription?.remove();
+        };
+    }, [user?.id]);
+
+    // Prefetch sau khi posts load xong
+    useEffect(() => {
+        if (!user?.id || posts.length === 0) return;
+
+        // Nếu đã prefetch rồi và không có flag trigger, không làm gì nữa
+        if (hasPrefetchedRef.current && !shouldPrefetchRef.current) return;
+
+        // Reset trigger flag nếu đã trigger
+        if (shouldPrefetchRef.current) {
+            shouldPrefetchRef.current = false;
+        }
+
+        let unsubscribe = null;
+
+        // Setup realtime subscription cho unread
+        unsubscribe = unreadService.setupRealtimeSubscription(
+            user.id,
+            async () => {
+                // Khi có update unread → Chỉ reload unread messages count
+                // KHÔNG reload notifications (vì handleNewNotification đã cập nhật unread count rồi)
+                // KHÔNG prefetch (prefetch chỉ chạy lần đầu khi vào app)
+                await loadUnreadMessagesCount();
+                // Bỏ loadNotifications() để tránh reload từ cache làm unread count bị giảm
+            }
+        );
+
+        // Initial prefetch sau khi load xong posts (background)
+        // Prefetch lại mỗi khi vào app (cache đã bị xóa khi thoát app)
+        const initialPrefetch = async () => {
+            try {
+                // Kiểm tra AsyncStorage xem đã prefetch chưa trong session hiện tại
+                // (không persist qua các lần thoát app vì cache đã bị xóa)
+                if (!hasPrefetchedCheckedRef.current) {
+                    const prefetchedFlag = await AsyncStorage.getItem(`hasPrefetched_${user.id}`);
+                    if (prefetchedFlag === 'true') {
+                        hasPrefetchedRef.current = true;
+                    }
+                    hasPrefetchedCheckedRef.current = true;
+                }
+
+                // Nếu đã prefetch rồi trong session này, không prefetch nữa
+                if (hasPrefetchedRef.current) {
+                    console.log('[Home] Đã prefetch trong session này, không cần prefetch lại');
+                    return;
+                }
+
+                // Kiểm tra unread để ưu tiên prefetch
+                const unreadMessagesCount = await unreadService.getUnreadMessagesCount(user.id);
+                const unreadNotificationsCount = await unreadService.getUnreadNotificationsCount(user.id);
+
+                // Tạo danh sách prefetch ưu tiên
+                const prefetchScreens = [];
+
+                // Ưu tiên 1: chatList nếu có unread messages
+                if (unreadMessagesCount > 0) {
+                    prefetchScreens.push({ screen: 'chatList', priority: 1 });
+                }
+
+                // Ưu tiên 2: personalNotifications nếu có unread notifications
+                if (unreadNotificationsCount > 0) {
+                    prefetchScreens.push({ screen: 'personalNotifications', priority: 1 });
+                }
+
+                // Lấy top predictions để fill đến 3 màn hình (loại bỏ những cái đã có unread)
+                const predictions = await predictionService.getPredictions(user.id);
+                const existingScreens = new Set(prefetchScreens.map(p => p.screen));
+                const topPredictions = predictions
+                    .filter(p => !existingScreens.has(p.screen))
+                    .slice(0, 3 - prefetchScreens.length);
+
+                // Gộp lại, tối đa 3 cái
+                const finalPrefetch = [...prefetchScreens, ...topPredictions].slice(0, 3);
+
+                // Đảm bảo chỉ có tối đa 3 màn hình
+                if (finalPrefetch.length > 3) {
+                    console.log('[Warning] Prefetch có hơn 3 màn hình, chỉ lấy 3 màn hình đầu tiên');
+                    finalPrefetch.splice(3);
+                }
+
+                // Đánh dấu đã prefetch để không prefetch lại (persist qua các lần navigate)
+                hasPrefetchedRef.current = true;
+                await AsyncStorage.setItem(`hasPrefetched_${user.id}`, 'true');
+
+                prefetchService.smartPrefetch(user.id, finalPrefetch);
+            } catch (error) {
+                console.log('[Home] Error in initial prefetch:', error);
+            }
+        };
+
+        // Delay một chút để không block UI
+        const timer = setTimeout(() => {
+            initialPrefetch();
+        }, 1000);
+
+        return () => {
+            if (unsubscribe) unsubscribe();
+            clearTimeout(timer);
+        };
+    }, [user?.id, posts.length]);
 
     const getPosts = async () => {
         limit = limit + 4;
@@ -428,69 +757,69 @@ const Home = () => {
 
 
     return (
-        <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.backgroundSecondary }}>
-            <View style={styles.container}>
-                {/* App Header */}
-                <AppHeader
-                    notificationCount={notificationCount}
-                    onNotificationPress={() => router.push('personalNotifications')}
-                    onMenuPress={() => setShowMenu(true)}
-                />
+        <View style={styles.container}>
+            {/* App Header */}
+            <AppHeader
+                notificationCount={notificationCount}
+                unreadMessagesCount={unreadMessagesCount}
+                onNotificationPress={() => router.push('personalNotifications')}
+                onMenuPress={() => setShowMenu(true)}
+            />
 
 
-                {/* Posts Feed */}
-                <FlatList
-                    ref={flatListRef}
-                    data={posts}
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.listStyle}
-                    keyExtractor={(item, index) => `post-${item.id}-${index}-${item.created_at || Date.now()}`}
-                    onScrollToIndexFailed={(info) => {
-                        console.log('Scroll to index failed:', info);
-                        // Fallback: scroll to offset
-                        setTimeout(() => {
-                            flatListRef.current?.scrollToOffset({
-                                offset: info.averageItemLength * info.index,
-                                animated: true,
-                            });
-                        }, 100);
-                    }}
-                    ListHeaderComponent={() => (
-                        <View style={styles.createPostContainer}>
-                            <View style={styles.createPostBox}>
-                                <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
-                                <View style={styles.createPostInputArea}>
-                                    <TouchableOpacity
-                                        style={styles.createPostPlaceholder}
-                                        onPress={handleCreatePost}
-                                    >
-                                        <Text style={styles.createPostPlaceholderText}>Bạn đang nghĩ gì?</Text>
-                                    </TouchableOpacity>
-                                </View>
+            {/* Posts Feed */}
+            <FlatList
+                ref={flatListRef}
+                data={posts}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.listStyle}
+                keyExtractor={(item, index) => `post-${item.id}-${index}-${item.created_at || Date.now()}`}
+                onScrollToIndexFailed={(info) => {
+                    console.log('Scroll to index failed:', info);
+                    // Fallback: scroll to offset
+                    setTimeout(() => {
+                        flatListRef.current?.scrollToOffset({
+                            offset: info.averageItemLength * info.index,
+                            animated: true,
+                        });
+                    }, 100);
+                }}
+                ListHeaderComponent={() => (
+                    <View style={styles.createPostContainer}>
+                        <View style={styles.createPostBox}>
+                            <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
+                            <View style={styles.createPostInputArea}>
+                                <TouchableOpacity
+                                    style={styles.createPostPlaceholder}
+                                    onPress={handleCreatePost}
+                                >
+                                    <Text style={styles.createPostPlaceholderText}>Bạn đang nghĩ gì?</Text>
+                                </TouchableOpacity>
                             </View>
                         </View>
-                    )}
-                    renderItem={({ item }) => {
-                        return <PostCard
-                            item={item}
-                            currentUser={user}
-                            router={router} />
-                    }}
-                    onEndReached={() => {
-                        getPosts();
-                    }}
-                    onEndReachedThreshold={0.3}
-                    ListFooterComponent={hasMore ? (
-                        <View style={{ marginVertical: posts.length == 0 ? 200 : 30 }}>
-                            <Loading />
-                        </View>
-                    ) : (
-                        <View style={{ marginVertical: 30 }}>
-                            <Text style={styles.noPosts}>Không còn bài đăng</Text>
-                        </View>
-                    )}
-                />
-            </View>
+                    </View>
+                )}
+                renderItem={({ item, index }) => {
+                    return <PostCard
+                        item={item}
+                        currentUser={user}
+                        router={router}
+                        index={index} />
+                }}
+                onEndReached={() => {
+                    getPosts();
+                }}
+                onEndReachedThreshold={0.3}
+                ListFooterComponent={hasMore ? (
+                    <View style={{ marginVertical: posts.length == 0 ? 200 : 30 }}>
+                        <Loading />
+                    </View>
+                ) : (
+                    <View style={{ marginVertical: 30 }}>
+                        <Text style={styles.noPosts}>Không còn bài đăng</Text>
+                    </View>
+                )}
+            />
 
             {/* Menu Drawer */}
             <Modal
@@ -513,8 +842,8 @@ const Home = () => {
                                             rounded={theme.radius.full}
                                         />
                                         <View style={styles.menuUserDetails}>
-                                            <Text style={styles.menuUserName}>{user?.name || 'User'}</Text>
-                                            <Text style={styles.menuUserEmail}>{user?.email || 'user@example.com'}</Text>
+                                            <Text style={styles.menuUserName}>{userName}</Text>
+                                            <Text style={styles.menuUserEmail}>{userInfo?.email || user?.email || 'user@example.com'}</Text>
                                         </View>
                                     </View>
                                 </View>
@@ -624,10 +953,21 @@ const Home = () => {
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
+                                            router.push('test');
+                                        }}
+                                    >
+                                        <Icon name="code" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>TEST</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
                                             router.push('newChat');
                                         }}
                                     >
-                                        <Icon name="messageCircle" size={hp(2.5)} color={theme.colors.text} />
+                                        <Icon name="message-circle" size={hp(2.5)} color={theme.colors.text} />
                                         <Text style={styles.menuItemText}>Tạo cuộc trò chuyện</Text>
                                     </TouchableOpacity>
                                 </View>
@@ -641,7 +981,7 @@ const Home = () => {
                                             onLogout();
                                         }}
                                     >
-                                        <Icon name="logOut" size={hp(2.5)} color={theme.colors.error} />
+                                        <Icon name="logout" size={hp(2.5)} color={theme.colors.error} />
                                         <Text style={[styles.menuItemText, styles.logoutText]}>Đăng xuất</Text>
                                     </TouchableOpacity>
                                 </View>
@@ -710,7 +1050,7 @@ const Home = () => {
                 onDecline={handleDeclineCall}
             />
 
-        </SafeAreaView>
+        </View>
     )
 }
 
@@ -719,8 +1059,8 @@ export default Home
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang thông báo CLB
     },
 
     // Header Styles
