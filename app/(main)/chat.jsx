@@ -547,16 +547,10 @@ const ChatScreen = () => {
 
                     // Device-local plaintext authority: sender_copy và optimistic tồn tại độc lập
                     setMessages(prev => {
-                        // DEBUG: Log khi realtime message đến
-                        // TEST: Tắt tạm để kiểm tra performance
-                        // if (__DEV__ && decryptedMessage.runtime_plain_text) {
-                        //     console.log('[REALTIME_DECRYPT]', {
-                        //         message_id: decryptedMessage.id,
-                        //         has_runtime_plain_text: !!decryptedMessage.runtime_plain_text,
-                        //         prev_count: prev.length,
-                        //         prev_optimistic_count: prev.filter(m => m.id?.startsWith('temp-')).length
-                        //     });
-                        // }
+                        // #region agent log
+                        const matchingOptimistic = prev.find(optMsg => optMsg.id?.startsWith('temp-') && optMsg.sender_id === decryptedMessage.sender_id);
+                        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:549',message:'handleRealtimeMessage sender copy',data:{messageId:decryptedMessage.id,hasRuntimePlainText:!!decryptedMessage.runtime_plain_text,runtimePlainTextLength:decryptedMessage.runtime_plain_text?.length,hasMatchingOptimistic:!!matchingOptimistic,optimisticUiOptimisticText:matchingOptimistic?.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                        // #endregion
                         // Kiểm tra message đã tồn tại chưa
                         const existingIndex = prev.findIndex(msg => msg.id === decryptedMessage.id);
                         let newMessages;
@@ -997,6 +991,9 @@ const ChatScreen = () => {
                     );
                     return timeDiff < 5000;
                 });
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:982',message:'mergeMessages optimistic check',data:{optimisticId:msg.id,hasDecryptedSenderCopy,hasUiOptimisticText:!!msg.ui_optimistic_text,uiOptimisticText:msg.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                // #endregion
                 if (hasDecryptedSenderCopy) {
                     // Đã có sender_copy với runtime_plain_text → bỏ qua optimistic
                     return;
@@ -1043,7 +1040,37 @@ const ChatScreen = () => {
                     // New message đã có runtime_plain_text → dùng nó
                     finalMsg = msg;
                 }
+                
+                // CRITICAL: Preserve ui_optimistic_text từ optimistic message nếu sender_copy chưa decrypt
+                // Nếu finalMsg là sender_copy chưa decrypt và có optimistic tương ứng → preserve ui_optimistic_text
+                if (finalMsg.is_sender_copy && !finalMsg.runtime_plain_text && !finalMsg.ui_optimistic_text) {
+                    const matchingOptimistic = messages.find(optMsg => 
+                        optMsg.id?.startsWith('temp-') &&
+                        optMsg.sender_id === finalMsg.sender_id &&
+                        optMsg.conversation_id === finalMsg.conversation_id &&
+                        optMsg.ui_optimistic_text
+                    );
+                    if (matchingOptimistic) {
+                        const timeDiff = Math.abs(
+                            new Date(finalMsg.created_at).getTime() - new Date(matchingOptimistic.created_at).getTime()
+                        );
+                        if (timeDiff < 5000) {
+                            finalMsg = {
+                                ...finalMsg,
+                                ui_optimistic_text: matchingOptimistic.ui_optimistic_text
+                            };
+                            // #region agent log
+                            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1041',message:'mergeMessages preserved ui_optimistic_text',data:{messageId:finalMsg.id,uiOptimisticText:finalMsg.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                            // #endregion
+                        }
+                    }
+                }
 
+                // #region agent log
+                if (finalMsg.id?.startsWith('temp-') || (finalMsg.is_sender_copy && !finalMsg.runtime_plain_text)) {
+                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1042',message:'mergeMessages final message',data:{messageId:finalMsg.id,hasUiOptimisticText:!!finalMsg.ui_optimistic_text,uiOptimisticText:finalMsg.ui_optimistic_text?.substring(0,20),hasRuntimePlainText:!!finalMsg.runtime_plain_text,hasContent:!!finalMsg.content,contentLength:finalMsg.content?.length,isEncrypted:finalMsg.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                }
+                // #endregion
                 mergedMessages.push(finalMsg);
             }
         });
@@ -1511,9 +1538,52 @@ const ChatScreen = () => {
             // Messages cũ (v1/v2) được mã hóa bằng DeviceKey, KHÔNG thể decrypt bằng ConversationKey
             if (msg.is_encrypted === true &&
                 msg.message_type === 'text' &&
-                !msg.runtime_plain_text &&
                 msg.encryption_version != null &&
                 msg.encryption_version >= 3) { // CHỈ decrypt v3+ (phải check != null để tránh null/undefined)
+                
+                // CRITICAL: Validate runtime_plain_text hiện tại
+                // Nếu runtime_plain_text có vẻ là ciphertext (chứa ký tự nhị phân, quá ngắn với base64 chars) → decrypt lại
+                let shouldDecrypt = !msg.runtime_plain_text; // Chưa có → decrypt
+                
+                if (msg.runtime_plain_text) {
+                    // Đã có runtime_plain_text → kiểm tra xem có phải ciphertext không
+                    const plaintext = msg.runtime_plain_text;
+                    
+                    // Kiểm tra ký tự nhị phân (non-printable)
+                    const binaryCharMatches = plaintext.match(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFD]/g);
+                    const hasReplacementChar = plaintext.includes('\uFFFD');
+                    const binaryCharCount = binaryCharMatches ? binaryCharMatches.length : 0;
+                    const hasBinaryChars = hasReplacementChar || binaryCharCount >= 2;
+                    
+                    // Kiểm tra base64-like (ngắn + có ký tự đặc biệt)
+                    const hasBase64SpecialChars = plaintext.includes('+') || plaintext.includes('/') || plaintext.includes('=');
+                    const isShortBase64Like = plaintext.length <= 10 && hasBase64SpecialChars;
+                    
+                    // CRITICAL: Nếu runtime_plain_text quá ngắn (<= 4 ký tự) VÀ message vẫn encrypted
+                    // → có thể là ciphertext chưa được decrypt đúng
+                    // Plaintext hợp lệ thường >= 1 ký tự, nhưng nếu quá ngắn và vẫn encrypted → nghi ngờ
+                    const isVeryShortAndEncrypted = plaintext.length <= 4 && msg.is_encrypted === true;
+                    
+                    // Nếu có dấu hiệu là ciphertext → decrypt lại
+                    if (hasBinaryChars || isShortBase64Like || isVeryShortAndEncrypted) {
+                        if (__DEV__) {
+                            console.log(`[DECRYPT_ALL_MESSAGES] Re-decrypting message ${msg.id} (runtime_plain_text looks like ciphertext):`, {
+                                length: plaintext.length,
+                                preview: plaintext.substring(0, 20),
+                                hasBinaryChars,
+                                isShortBase64Like,
+                                isVeryShortAndEncrypted,
+                                is_encrypted: msg.is_encrypted
+                            });
+                        }
+                        shouldDecrypt = true;
+                    }
+                }
+                
+                if (!shouldDecrypt) {
+                    // Đã có runtime_plain_text hợp lệ → giữ nguyên
+                    return msg;
+                }
 
                 try {
                     // Decrypt bằng ConversationKey
@@ -1534,8 +1604,29 @@ const ChatScreen = () => {
                         return decryptedMsg;
                     } else {
                         skippedCount++;
-                        console.log(`[DECRYPT_ALL_MESSAGES] ✗ Cannot decrypt message ${msg.id} (decryptedContent empty)`);
+                        if (__DEV__) {
+                            console.log(`[DECRYPT_ALL_MESSAGES] ✗ Cannot decrypt message ${msg.id} (decryptedContent empty)`, {
+                                messageId: msg.id,
+                                hasContent: !!msg.content,
+                                contentLength: msg.content?.length,
+                                encryptionVersion: msg.encryption_version,
+                                isEncrypted: msg.is_encrypted,
+                                messageType: msg.message_type,
+                                hadRuntimePlainText: !!msg.runtime_plain_text,
+                                oldRuntimePlainTextLength: msg.runtime_plain_text?.length
+                            });
+                        } else {
+                            console.log(`[DECRYPT_ALL_MESSAGES] ✗ Cannot decrypt message ${msg.id} (decryptedContent empty)`);
+                        }
                         // Không decrypt được → giữ nguyên message (sẽ hiển thị placeholder)
+                        // CRITICAL: Clear runtime_plain_text cũ nếu có (có thể là ciphertext)
+                        if (msg.runtime_plain_text) {
+                            return {
+                                ...msg,
+                                runtime_plain_text: undefined,
+                                decryption_error: true
+                            };
+                        }
                         return msg;
                     }
                 } catch (error) {
@@ -1574,14 +1665,17 @@ const ChatScreen = () => {
         }
 
         // Log một vài messages đầu để xác nhận
-        messagesWithPlaintext.slice(0, 3).forEach((msg, idx) => {
-            console.log(`[DECRYPT_ALL_MESSAGES] Message ${idx + 1} has runtime_plain_text:`, {
-                id: msg.id,
-                hasRuntimePlainText: !!msg.runtime_plain_text,
-                runtimePlainTextLength: msg.runtime_plain_text?.length || 0,
-                is_encrypted: msg.is_encrypted
+        if (__DEV__) {
+            const messagesWithPlaintext = decryptedMessages.filter(m => m.runtime_plain_text);
+            messagesWithPlaintext.slice(0, 3).forEach((msg, idx) => {
+                console.log(`[DECRYPT_ALL_MESSAGES] Message ${idx + 1} has runtime_plain_text:`, {
+                    id: msg.id,
+                    hasRuntimePlainText: !!msg.runtime_plain_text,
+                    runtimePlainTextLength: msg.runtime_plain_text?.length || 0,
+                    is_encrypted: msg.is_encrypted
+                });
             });
-        });
+        }
 
         // QUAN TRỌNG: setState với array mới (immutable) để trigger re-render
         // CRITICAL: Sync messagesRef ngay lập tức để tránh desync
@@ -1654,20 +1748,18 @@ const ChatScreen = () => {
             sender: { id: user.id, name: user.name, image: user.image }
         };
 
-        // DEBUG LOG: Log optimistic message trước khi insert vào state
-        // TEST: Tắt tạm để kiểm tra performance
-        // console.log('[SEND_MESSAGE]');
-        // console.log(`tempMessageId=${optimisticMessage.id}`);
-        // console.log(`is_encrypted=${optimisticMessage.is_encrypted}`);
-        // console.log(`content_length=${optimisticMessage.content ? optimisticMessage.content.length : 0}`);
-        // console.log(`ui_optimistic_text=${optimisticMessage.ui_optimistic_text ? 'YES' : 'NO'}`);
-        // console.log(`runtime_plain_text=${optimisticMessage.runtime_plain_text ? 'YES' : 'NO'}`);
-        // console.log(`sender_device_id=${optimisticMessage.sender_device_id}`);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1710',message:'sendMessageHandler optimistic message created',data:{tempMessageId,plainText,hasUiOptimisticText:!!optimisticMessage.ui_optimistic_text,uiOptimisticTextLength:optimisticMessage.ui_optimistic_text?.length,content:optimisticMessage.content,isEncrypted:optimisticMessage.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
 
         // Thêm optimistic message vào state ngay để hiển thị
         // Với inverted FlatList, message mới nhất phải ở index 0 → unshift vào đầu array
         setMessages(prev => {
             const newMessages = mergeMessages([optimisticMessage, ...prev]);
+            // #region agent log
+            const mergedOptimistic = newMessages.find(m => m.id === tempMessageId);
+            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1737',message:'after mergeMessages optimistic',data:{tempMessageId,foundInMerged:!!mergedOptimistic,hasUiOptimisticText:!!mergedOptimistic?.ui_optimistic_text,uiOptimisticTextLength:mergedOptimistic?.ui_optimistic_text?.length,hasContent:!!mergedOptimistic?.content,contentLength:mergedOptimistic?.content?.length,isEncrypted:mergedOptimistic?.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
             // CRITICAL: Sync messagesRef ngay lập tức
             messagesRef.current = newMessages;
             return newMessages;
@@ -2099,20 +2191,23 @@ const ChatScreen = () => {
         const hasUiOptimisticText = message.ui_optimistic_text &&
             typeof message.ui_optimistic_text === 'string' &&
             message.ui_optimistic_text.trim() !== '';
+        
+        // #region agent log
+        if (message.id?.startsWith('temp-') || (message.is_sender_copy && !message.runtime_plain_text)) {
+            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2191',message:'renderMessage hasUiOptimisticText check',data:{messageId:message.id,uiOptimisticText:message.ui_optimistic_text,uiOptimisticTextType:typeof message.ui_optimistic_text,hasUiOptimisticText,isTemp:message.id?.startsWith('temp-'),isSenderCopy:message.is_sender_copy,hasRuntimePlainText:!!message.runtime_plain_text},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        }
+        // #endregion
 
         // FIX: Khi currentDeviceId === null, bỏ qua device ID match check
         // Lý do: Nếu đã có runtime_plain_text trong RAM, được phép hiển thị (không nhất thiết phải match deviceId khi chưa có deviceId)
+        // CRITICAL FIX: Không check decrypted_on_device_id cho runtime_plain_text - nếu có runtime_plain_text thì hiển thị
+        // decrypted_on_device_id chỉ dùng để track, không dùng để restrict display
         let hasRuntimePlainText = false;
         if (message.runtime_plain_text &&
             typeof message.runtime_plain_text === 'string' &&
             message.runtime_plain_text.trim() !== '') {
-            if (currentDeviceId !== null && currentDeviceId !== undefined) {
-                // Có deviceId → check match (strict E2EE)
-                hasRuntimePlainText = message.decrypted_on_device_id === currentDeviceId;
-            } else {
-                // Không có deviceId → chỉ check tồn tại (degrade gracefully)
-                hasRuntimePlainText = true;
-            }
+            // Nếu có runtime_plain_text → luôn hiển thị (không check device ID)
+            hasRuntimePlainText = true;
         }
 
         // TIÊU CHUẨN HIỂN THỊ TEXT (BẮT BUỘC):
@@ -2267,20 +2362,9 @@ const ChatScreen = () => {
                                 message.runtime_plain_text.trim() !== '') {
                                 console.log(`[RENDER_MESSAGE] Message ${message.id} has runtime_plain_text, length: ${message.runtime_plain_text.length}`);
                                 // Có runtime_plain_text → render bubble với plaintext (bỏ qua placeholder check)
-                            } else if (message.is_encrypted === true &&
-                                message.message_type === 'text' &&
-                                !message.runtime_plain_text) {
-                                // KHÔNG có runtime_plain_text + encrypted → render placeholder
-                                console.log(`[RENDER_MESSAGE] Rendering placeholder for message ${message.id} (encrypted, no runtime_plain_text)`);
-                                return (
-                                    <View style={[styles.decryptionErrorContainer, { backgroundColor: '#FFFFFF' }]}>
-                                        <Icon name="lock" size={16} color="#FF0000" />
-                                        <Text style={styles.decryptionErrorText}>
-                                            🔒 Đã mã hoá đầu cuối – Nhập PIN để đọc
-                                        </Text>
-                                    </View>
-                                );
                             }
+                            // CRITICAL FIX: KHÔNG return placeholder View riêng biệt ở đây
+                            // Placeholder sẽ được render BÊN TRONG message bubble thông qua checkDisplayText logic
 
                             // Check xem có phải "Đã mã hóa đầu cuối" không - nếu có thì render riêng, không có messageBubble
                             let checkDisplayText = null;
@@ -2305,19 +2389,19 @@ const ChatScreen = () => {
                                 checkDisplayText = null;
                             }
 
-                            // Nếu vẫn là "Đã mã hóa đầu cuối" và chưa có runtime_plain_text → render placeholder
-                            if (checkDisplayText === 'Đã mã hóa đầu cuối' &&
-                                message.is_encrypted === true &&
-                                message.message_type === 'text' &&
-                                !message.runtime_plain_text) {
-                                return (
-                                    <View style={[styles.decryptionErrorContainer, { backgroundColor: '#FFFFFF' }]}>
-                                        <Icon name="lock" size={16} color="#FF0000" />
-                                        <Text style={styles.decryptionErrorText}>
-                                            🔒 Đã mã hoá đầu cuối – Nhập PIN để đọc
-                                        </Text>
-                                    </View>
-                                );
+                            // CRITICAL FIX: KHÔNG return placeholder View riêng biệt ở đây
+                            // Placeholder sẽ được render BÊN TRONG message bubble thông qua checkDisplayText
+                            // Nếu checkDisplayText === 'Đã mã hóa đầu cuối', nó sẽ được render như text bình thường trong bubble
+
+                            // CRITICAL FIX: Kiểm tra self message không có text → không render cả message bubble
+                            if (isSelfMessage && message.message_type === 'text') {
+                                if (!hasUiOptimisticText && !hasRuntimePlainText) {
+                                    const canRender = canRenderPlaintext(message, currentDeviceId);
+                                    if (!canRender || !message.content || typeof message.content !== 'string' || message.content.trim() === '') {
+                                        // Self message không có text → không render cả message bubble
+                                        return null;
+                                    }
+                                }
                             }
 
                             return (
@@ -2326,132 +2410,143 @@ const ChatScreen = () => {
                                     // Optimistic message (có ui_optimistic_text) → LUÔN dùng bubble bình thường, KHÔNG BAO GIỜ dùng encryptedBubbleOwn
                                     isOwn ? styles.ownBubble : styles.otherBubble
                                 ]}>
+                                    {message.message_type === 'text' ? (() => {
+                                        // Optimistic message → LUÔN dùng text style bình thường (màu trắng cho own, màu đen cho other)
+                                        const textColorStyle = isOwn ? styles.ownText : styles.otherText;
 
-                                    {message.message_type === 'text' && (
-                                        <>
-                                            {/* FIX CRITICAL UI BUG: Ép buộc text luôn có giá trị - KHÔNG BAO GIỜ render undefined/null/empty */}
-                                            {(() => {
-                                                // Optimistic message → LUÔN dùng text style bình thường (màu trắng cho own, màu đen cho other)
-                                                const textColorStyle = isOwn ? styles.ownText : styles.otherText;
-
-                                                // FIX CRITICAL UI BUG: Tách riêng logic self message
-                                                // Self message KHÔNG BAO GIỜ được trống
-                                                if (isSelfMessage) {
-                                                    // Ưu tiên: ui_optimistic_text
-                                                    // DEBUG: Log để xác định white bubble bug
-                                                    if (__DEV__ && message.id?.startsWith('temp-')) {
-                                                        console.log('[RENDER_OPTIMISTIC]', {
-                                                            id: message.id,
-                                                            ui_optimistic_text: message.ui_optimistic_text,
-                                                            ui_optimistic_text_type: typeof message.ui_optimistic_text,
-                                                            ui_optimistic_text_length: message.ui_optimistic_text?.length,
-                                                            hasUiOptimisticText,
-                                                            isSelfMessage,
-                                                            currentDeviceId
-                                                        });
-                                                    }
-                                                    if (hasUiOptimisticText) {
-                                                        return (
-                                                            <Text style={[
-                                                                styles.messageText,
-                                                                textColorStyle
-                                                            ]}>
-                                                                {message.ui_optimistic_text}
-                                                            </Text>
-                                                        );
-                                                    }
-
-                                                    // Thứ hai: runtime_plain_text (đã decrypt)
-                                                    if (hasRuntimePlainText) {
-                                                        return (
-                                                            <Text style={[
-                                                                styles.messageText,
-                                                                textColorStyle
-                                                            ]}>
-                                                                {message.runtime_plain_text}
-                                                            </Text>
-                                                        );
-                                                    }
-
-                                                    // Fallback: Self message luôn có text
-                                                    // Nếu chưa decrypt được → hiển thị "Đang gửi..." hoặc "Đã mã hóa đầu cuối"
-                                                    const canRender = canRenderPlaintext(message, currentDeviceId);
-
-                                                    // DEBUG: Log để xác định white bubble bug
-                                                    // TEST: Tắt tạm để kiểm tra performance
-                                                    // if (__DEV__ && message.id?.startsWith('temp-')) {
-                                                    //     console.log('[RENDER_SELF_FALLBACK]', {
-                                                    //         id: message.id,
-                                                    //         canRender,
-                                                    //         content: message.content,
-                                                    //         content_type: typeof message.content,
-                                                    //         is_encrypted: message.is_encrypted,
-                                                    //         hasUiOptimisticText,
-                                                    //         hasRuntimePlainText
-                                                    //     });
-                                                    // }
-
-                                                    if (canRender && message.content &&
-                                                        typeof message.content === 'string' &&
-                                                        message.content.trim() !== '') {
-                                                        return (
-                                                            <Text style={[
-                                                                styles.messageText,
-                                                                textColorStyle
-                                                            ]}>
-                                                                {message.content}
-                                                            </Text>
-                                                        );
-                                                    }
-
-                                                    // Self message chưa có text → return null (không hiển thị gì)
-                                                    return null;
+                                        // FIX CRITICAL UI BUG: Tách riêng logic self message
+                                        // Self message KHÔNG BAO GIỜ được trống
+                                        if (isSelfMessage) {
+                                            // Ưu tiên: ui_optimistic_text
+                                            // #region agent log
+                                            if (message.id?.startsWith('temp-')) {
+                                                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2406',message:'renderMessage self message',data:{messageId:message.id,hasUiOptimisticText,uiOptimisticText:message.ui_optimistic_text?.substring(0,20),hasRuntimePlainText,runtimePlainText:message.runtime_plain_text?.substring(0,20),hasContent:!!message.content,contentLength:message.content?.length,contentPreview:message.content?.substring(0,20),isEncrypted:message.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                                            }
+                                            // #endregion
+                                            if (hasUiOptimisticText) {
+                                                // #region agent log
+                                                if (message.id?.startsWith('temp-')) {
+                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2418',message:'renderMessage rendering ui_optimistic_text',data:{messageId:message.id,renderedText:message.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                                                 }
-
-                                                // Non-self message: Sử dụng helper để lấy text an toàn
-                                                const displayText = getSafeDisplayText(message, currentDeviceId);
-
-                                                // FIX CRITICAL UI BUG: Guard render - không render undefined/null/empty
-                                                if (!displayText || typeof displayText !== 'string' || displayText.trim() === '') {
-                                                    // ASSERT để bắt bug
-                                                    if (__DEV__) {
-                                                        console.error('[UI BUG] Empty displayText', {
-                                                            messageId: message.id,
-                                                            isSelfMessage,
-                                                            hasUiOptimisticText,
-                                                            hasRuntimePlainText,
-                                                            content: message.content?.substring(0, 50),
-                                                            is_encrypted: message.is_encrypted,
-                                                            sender_device_id: message.sender_device_id,
-                                                            currentDeviceId
-                                                        });
-                                                    }
-
-                                                    // Fallback: luôn có text
-                                                    return (
-                                                        <View style={[styles.decryptionErrorContainer, { backgroundColor: '#FFFFFF' }]}>
-                                                            <Icon name="lock" size={16} color="#FF0000" />
-                                                            <Text style={styles.decryptionErrorText}>
-                                                                Đã mã hóa đầu cuối
-                                                            </Text>
-                                                        </View>
-                                                    );
-                                                }
-
-                                                // Display text hợp lệ (không còn check "Đã mã hóa đầu cuối" ở đây nữa vì đã xử lý ở trên)
-
-                                                // Plaintext hợp lệ → render text
+                                                // #endregion
                                                 return (
                                                     <Text style={[
                                                         styles.messageText,
-                                                        isOwn ? styles.ownText : styles.otherText
+                                                        textColorStyle
                                                     ]}>
-                                                        {displayText}
+                                                        {message.ui_optimistic_text}
                                                     </Text>
                                                 );
-                                            })()}
-                                        </>
-                                    )}
+                                            }
+
+                                            // Thứ hai: runtime_plain_text (đã decrypt)
+                                            if (hasRuntimePlainText) {
+                                                // #region agent log
+                                                if (message.id?.startsWith('temp-')) {
+                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2430',message:'renderMessage rendering runtime_plain_text',data:{messageId:message.id,renderedText:message.runtime_plain_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                                                }
+                                                // #endregion
+                                                return (
+                                                    <Text style={[
+                                                        styles.messageText,
+                                                        textColorStyle
+                                                    ]}>
+                                                        {message.runtime_plain_text}
+                                                    </Text>
+                                                );
+                                            }
+
+                                            // Fallback: Self message luôn có text
+                                            // Nếu chưa decrypt được → hiển thị "Đang gửi..." hoặc "Đã mã hóa đầu cuối"
+                                            const canRender = canRenderPlaintext(message, currentDeviceId);
+
+                                            // #region agent log
+                                            if (message.id?.startsWith('temp-')) {
+                                                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2443',message:'renderMessage fallback check',data:{messageId:message.id,canRender,hasContent:!!message.content,contentLength:message.content?.length,contentPreview:message.content?.substring(0,20),isEncrypted:message.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                                            }
+                                            // #endregion
+
+                                            // CRITICAL: TUYỆT ĐỐI không render content nếu message đã encrypted
+                                            // Chỉ render content khi message KHÔNG encrypted (plaintext message)
+                                            if (canRender && 
+                                                message.is_encrypted !== true &&
+                                                message.content &&
+                                                typeof message.content === 'string' &&
+                                                message.content.trim() !== '') {
+                                                // #region agent log
+                                                if (message.id?.startsWith('temp-')) {
+                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2479',message:'renderMessage rendering content (plaintext)',data:{messageId:message.id,renderedText:message.content?.substring(0,20),isEncrypted:message.is_encrypted,contentLength:message.content?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                                                }
+                                                // #endregion
+                                                return (
+                                                    <Text style={[
+                                                        styles.messageText,
+                                                        textColorStyle
+                                                    ]}>
+                                                        {message.content}
+                                                    </Text>
+                                                );
+                                            }
+
+                                            // Self message chưa có text → return null để không render text
+                                            // CRITICAL: Self message đang gửi (có ui_optimistic_text) đã được xử lý ở trên
+                                            // Nếu đến đây nghĩa là không có ui_optimistic_text, runtime_plain_text, hoặc content
+                                            // → Return null để không render text (message bubble sẽ không có text nhưng vẫn có thời gian)
+                                            // #region agent log
+                                            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2503',message:'renderMessage returning null (no text for self message)',data:{messageId:message.id,isTemp:message.id?.startsWith('temp-'),hasUiOptimisticText,hasRuntimePlainText,hasContent:!!message.content,contentLength:message.content?.length,isEncrypted:message.is_encrypted,canRender},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                                            // #endregion
+                                            return null;
+                                        }
+
+                                        // Non-self message: Sử dụng checkDisplayText đã được tính toán ở trên
+                                        // checkDisplayText có thể là: plaintext, "Đã mã hóa đầu cuối", hoặc null
+                                        const displayText = checkDisplayText || getSafeDisplayText(message, currentDeviceId);
+
+                                        // FIX CRITICAL UI BUG: Guard render - không render undefined/null/empty
+                                        // CRITICAL: Đảm bảo displayText luôn là string hợp lệ trước khi render
+                                        if (!displayText || typeof displayText !== 'string') {
+                                            // ASSERT để bắt bug
+                                            if (__DEV__) {
+                                                console.error('[UI BUG] Invalid displayText', {
+                                                    messageId: message.id,
+                                                    isSelfMessage,
+                                                    hasUiOptimisticText,
+                                                    hasRuntimePlainText,
+                                                    content: message.content?.substring(0, 50),
+                                                    is_encrypted: message.is_encrypted,
+                                                    sender_device_id: message.sender_device_id,
+                                                    currentDeviceId,
+                                                    checkDisplayText,
+                                                    displayText,
+                                                    displayTextType: typeof displayText
+                                                });
+                                            }
+
+                                            // Fallback: luôn có text
+                                            return (
+                                                <Text style={[
+                                                    styles.messageText,
+                                                    isOwn ? styles.ownText : styles.otherText
+                                                ]}>
+                                                    Đã mã hóa đầu cuối
+                                                </Text>
+                                            );
+                                        }
+
+                                        // CRITICAL: Đảm bảo displayText là string hợp lệ (không rỗng)
+                                        const safeDisplayText = displayText.trim() === '' ? 'Đã mã hóa đầu cuối' : displayText;
+
+                                        // Display text hợp lệ (có thể là plaintext hoặc "Đã mã hóa đầu cuối")
+                                        // CRITICAL: Render như text bình thường trong bubble, KHÔNG render placeholder View riêng biệt
+                                        return (
+                                            <Text style={[
+                                                styles.messageText,
+                                                isOwn ? styles.ownText : styles.otherText
+                                            ]}>
+                                                {safeDisplayText}
+                                            </Text>
+                                        );
+                                    })() : null}
 
                                     <Text style={[
                                         styles.messageTime,

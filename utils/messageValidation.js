@@ -183,7 +183,8 @@ export const getSafeDisplayText = (msg, currentDeviceId) => {
     }
 
     // 3. Kiểm tra có được phép render plaintext không (message không encrypted)
-    if (canRenderPlaintext(msg, currentDeviceId)) {
+    // CRITICAL: TUYỆT ĐỐI không render content nếu message đã encrypted
+    if (canRenderPlaintext(msg, currentDeviceId) && msg.is_encrypted !== true) {
         // FIX CRITICAL UI BUG: Đảm bảo content là string hợp lệ
         if (msg.content &&
             typeof msg.content === 'string' &&
