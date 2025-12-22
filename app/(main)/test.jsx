@@ -15,7 +15,7 @@ const Test = () => {
                 <MaterialIcons name="arrow-back" size={24} color="#ffffff" />
             </Pressable>
             <View style={styles.content}>
-                <Image
+            <Image
                     source={require('../../assets/images/test giao dien.png')}
                     style={styles.image}
                     resizeMode="contain"

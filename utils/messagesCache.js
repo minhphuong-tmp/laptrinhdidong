@@ -17,11 +17,11 @@ const isMessageEncrypted = (msg) => {
     // Siết chặt điều kiện: Flag true PHẢI có key hợp lệ
     if (msg.is_encrypted === true) {
         // Kiểm tra key hợp lệ (không phải string rỗng, không phải object rỗng)
-        const hasValidKey = 
+        const hasValidKey =
             (typeof msg.encrypted_aes_key === 'string' && msg.encrypted_aes_key.length > 0) ||
             (typeof msg.encrypted_aes_key_by_pin === 'string' && msg.encrypted_aes_key_by_pin.length > 0) ||
             (msg.encrypted_key_by_device && typeof msg.encrypted_key_by_device === 'object' && Object.keys(msg.encrypted_key_by_device).length > 0);
-        
+
         if (hasValidKey) {
             return true;
         } else {
@@ -41,11 +41,11 @@ const isMessageEncrypted = (msg) => {
     }
 
     // Fallback cho legacy / multi-device E2EE - chỉ nếu có key hợp lệ
-    const hasValidKey = 
+    const hasValidKey =
         (typeof msg.encrypted_aes_key === 'string' && msg.encrypted_aes_key.length > 0) ||
         (typeof msg.encrypted_aes_key_by_pin === 'string' && msg.encrypted_aes_key_by_pin.length > 0) ||
         (msg.encrypted_key_by_device && typeof msg.encrypted_key_by_device === 'object' && Object.keys(msg.encrypted_key_by_device).length > 0);
-    
+
     if (hasValidKey) {
         return true;
     }
@@ -60,22 +60,26 @@ const isMessageEncrypted = (msg) => {
 export const saveMessagesCache = async (conversationId, messages) => {
     try {
         const cacheKey = getCacheKey(conversationId);
-        // Loại bỏ decryptedContent và isDecrypted trước khi lưu cache
+        // CRITICAL: Loại bỏ TẤT CẢ runtime state trước khi lưu cache
+        // Runtime state bao gồm: decryptedContent, isDecrypted, runtime_plain_text, decrypted_on_device_id, ui_optimistic_text
         const messagesToCache = messages.map(msg => {
-            // Nếu message đã được decrypt, chỉ lưu encrypted content
-            if (msg.is_encrypted === true || msg.encrypted_aes_key || msg.encrypted_aes_key_by_pin) {
-                // Giữ nguyên encrypted content, loại bỏ decryptedContent
-                const { decryptedContent, isDecrypted, ...msgToCache } = msg;
-                // Đảm bảo content là encrypted content (không phải decrypted)
-                if (msg.is_encrypted === false && msg.decryption_error === false) {
-                    // Nếu message đã decrypt thành công, không lưu vào cache
-                    // Hoặc lưu với encrypted content gốc nếu có
-                    return msgToCache;
-                }
-                return msgToCache;
+            // Loại bỏ TẤT CẢ runtime state fields
+            const {
+                decryptedContent,
+                isDecrypted,
+                runtime_plain_text,
+                decrypted_on_device_id,
+                ui_optimistic_text,
+                ...msgToCache
+            } = msg;
+
+            // #region agent log
+            if (runtime_plain_text) {
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messagesCache.js:68', message: 'saveMessagesCache removing runtime_plain_text', data: { messageId: msg.id, hasRuntimePlainText: !!runtime_plain_text, isEncrypted: msg.is_encrypted, isSenderCopy: msg.is_sender_copy }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
             }
-            // Message không encrypted → lưu bình thường
-            const { decryptedContent, isDecrypted, ...msgToCache } = msg;
+            // #endregion
+
+            // Đảm bảo không có runtime state trong cached message
             return msgToCache;
         });
         const cacheData = {
@@ -112,68 +116,35 @@ export const loadMessagesCache = async (conversationId) => {
             return null;
         }
 
-        // Reset decryption state CHỈ cho messages đã encrypted
+        // CRITICAL: Reset TẤT CẢ runtime state khi load từ cache
+        // Runtime state bao gồm: decryptedContent, isDecrypted, runtime_plain_text, decrypted_on_device_id, ui_optimistic_text
         const resetMessages = messages.map(msg => {
-            // TRACE: Log raw message từ cache
-            if (msg.message_type === 'text') {
-                console.log('[TRACE] loadMessagesCache', {
-                    stage: 'loadMessagesCache_CACHE',
-                    id: msg.id,
-                    is_encrypted: msg.is_encrypted,
-                    is_sender_copy: msg.is_sender_copy,
-                    content_preview: msg.content ? msg.content.substring(0, 50) : null,
-                });
+            // #region agent log
+            if (msg.runtime_plain_text) {
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messagesCache.js:118', message: 'loadMessagesCache found runtime_plain_text in cache', data: { messageId: msg.id, hasRuntimePlainText: !!msg.runtime_plain_text, runtimePlainTextLength: msg.runtime_plain_text?.length, isEncrypted: msg.is_encrypted, isSenderCopy: msg.is_sender_copy }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
             }
-            
-            // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
-            if (msg.is_sender_copy === true) {
-                // sender_copy → giữ nguyên metadata, reset decryption state
-                const processed = {
-                    ...msg,
-                    decryptedContent: null,
-                    isDecrypted: false,
-                    // KHÔNG thay đổi is_encrypted (giữ nguyên từ cache)
-                    // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
-                };
-                
-                // TRACE: Log processed sender copy
-                if (msg.message_type === 'text') {
-                    console.log('[TRACE] loadMessagesCache', {
-                        stage: 'loadMessagesCache_PROCESSED_SENDER_COPY',
-                        id: processed.id,
-                        is_encrypted: processed.is_encrypted,
-                        is_sender_copy: processed.is_sender_copy,
-                        decryptedContent: processed.decryptedContent,
-                        content_preview: processed.content ? processed.content.substring(0, 50) : null,
-                    });
-                }
-                
-                return processed;
-            }
-            
-            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
-            // Self-healing: Ép thành plaintext nếu flag sai
-            const processed = {
-                ...msg,
-                decryptedContent: msg.content || null,
-                isDecrypted: true,
-                is_encrypted: false // Đảm bảo flag đúng
-                // Giữ nguyên content vì đây là tin nhắn thường
+            // #endregion
+
+            // Clear TẤT CẢ runtime state fields
+            const {
+                decryptedContent,
+                isDecrypted,
+                runtime_plain_text,
+                decrypted_on_device_id,
+                ui_optimistic_text,
+                ...cleanMessage
+            } = msg;
+
+            // Đảm bảo runtime state bị clear hoàn toàn
+            return {
+                ...cleanMessage,
+                // Explicitly set to undefined để đảm bảo không có runtime state
+                runtime_plain_text: undefined,
+                decrypted_on_device_id: undefined,
+                ui_optimistic_text: undefined,
+                decryptedContent: undefined,
+                isDecrypted: undefined
             };
-            
-            // TRACE: Log processed plaintext
-            if (msg.message_type === 'text') {
-                console.log('[TRACE] loadMessagesCache', {
-                    stage: 'loadMessagesCache_PROCESSED_PLAINTEXT',
-                    id: processed.id,
-                    is_encrypted: processed.is_encrypted,
-                    is_sender_copy: processed.is_sender_copy,
-                    decryptedContent: processed.decryptedContent ? processed.decryptedContent.substring(0, 50) : null,
-                    content_preview: processed.content ? processed.content.substring(0, 50) : null,
-                });
-            }
-            
-            return processed;
         });
 
         return resetMessages;

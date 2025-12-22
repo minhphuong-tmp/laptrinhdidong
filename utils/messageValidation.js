@@ -166,11 +166,27 @@ export const canRenderPlaintext = (msg, currentDeviceId) => {
 export const getSafeDisplayText = (msg, currentDeviceId) => {
     if (!msg) return 'Đã mã hóa đầu cuối';
 
+    // #region agent log - Track getSafeDisplayText calls
+    const logData = {
+        messageId: msg.id,
+        isEncrypted: msg.is_encrypted,
+        hasUiOptimisticText: !!(msg.ui_optimistic_text),
+        hasRuntimePlainText: !!(msg.runtime_plain_text),
+        hasContent: !!(msg.content),
+        contentLength: msg.content?.length || 0,
+        contentPreview: msg.content?.substring(0, 50) || '',
+        encryptionVersion: msg.encryption_version
+    };
+    // #endregion
+
     // 1. Ưu tiên: ui_optimistic_text (đảm bảo là string hợp lệ)
     if (msg.ui_optimistic_text !== null &&
         msg.ui_optimistic_text !== undefined &&
         typeof msg.ui_optimistic_text === 'string' &&
         msg.ui_optimistic_text.trim() !== '') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:174', message: 'getSafeDisplayText returning ui_optimistic_text', data: { ...logData, returnedText: msg.ui_optimistic_text.substring(0, 50) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run3', hypothesisId: 'J' }) }).catch(() => { });
+        // #endregion
         return msg.ui_optimistic_text;
     }
 
@@ -179,16 +195,61 @@ export const getSafeDisplayText = (msg, currentDeviceId) => {
         msg.runtime_plain_text !== undefined &&
         typeof msg.runtime_plain_text === 'string' &&
         msg.runtime_plain_text.trim() !== '') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:183', message: 'getSafeDisplayText returning runtime_plain_text', data: { ...logData, returnedText: msg.runtime_plain_text.substring(0, 50) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run3', hypothesisId: 'J' }) }).catch(() => { });
+        // #endregion
         return msg.runtime_plain_text;
     }
 
     // 3. Kiểm tra có được phép render plaintext không (message không encrypted)
     // CRITICAL: TUYỆT ĐỐI không render content nếu message đã encrypted
-    if (canRenderPlaintext(msg, currentDeviceId) && msg.is_encrypted !== true) {
+    // CRITICAL FIX: Nếu is_encrypted === true, LUÔN return placeholder, không check content
+    if (msg.is_encrypted === true) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:204', message: 'getSafeDisplayText message is encrypted, returning placeholder', data: { ...logData, isEncryptedFlag: true }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'T' }) }).catch(() => { });
+        // #endregion
+        return 'Đã mã hóa đầu cuối';
+    }
+
+    const canRender = canRenderPlaintext(msg, currentDeviceId);
+    const isContentCiphertext = msg.content ? detectCiphertextFormat(msg.content) : false;
+    
+    // #region agent log - Track content check
+    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:212', message: 'getSafeDisplayText checking content', data: { ...logData, canRender, isEncryptedFlag: msg.is_encrypted === true, isContentCiphertext, contentLength: msg.content?.length, contentPreview: msg.content?.substring(0, 100) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'T' }) }).catch(() => { });
+    // #endregion
+
+    if (canRender) {
+        // FIX CRITICAL UI BUG: Kiểm tra content có phải ciphertext format không
+        // Nếu content là ciphertext format → KHÔNG render, return placeholder
+        if (isContentCiphertext) {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:220', message: 'getSafeDisplayText detected ciphertext format, returning placeholder', data: { ...logData, isContentCiphertext: true, contentPreview: msg.content.substring(0, 100) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'T' }) }).catch(() => { });
+            // #endregion
+            return 'Đã mã hóa đầu cuối';
+        }
+
+        // FIX CRITICAL UI BUG: Kiểm tra content có vẻ là ciphertext (dài, có ký tự đặc biệt)
+        // Fallback: Nếu content quá dài (> 200 chars) và có ký tự đặc biệt → có thể là ciphertext
+        if (msg.content && typeof msg.content === 'string' && msg.content.length > 200) {
+            // Kiểm tra xem có nhiều ký tự Base64 không (A-Z, a-z, 0-9, +, /, =)
+            const base64CharCount = (msg.content.match(/[A-Za-z0-9+/=]/g) || []).length;
+            const base64Ratio = base64CharCount / msg.content.length;
+            // Nếu > 80% là Base64 chars và có dấu : → có thể là ciphertext
+            if (base64Ratio > 0.8 && msg.content.includes(':')) {
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:230', message: 'getSafeDisplayText detected possible ciphertext (long base64-like), returning placeholder', data: { ...logData, contentLength: msg.content.length, base64Ratio, hasColon: msg.content.includes(':') }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'T' }) }).catch(() => { });
+                // #endregion
+                return 'Đã mã hóa đầu cuối';
+            }
+        }
+
         // FIX CRITICAL UI BUG: Đảm bảo content là string hợp lệ
         if (msg.content &&
             typeof msg.content === 'string' &&
             msg.content.trim() !== '') {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:240', message: 'getSafeDisplayText returning content', data: { ...logData, returnedText: msg.content.substring(0, 50), isContentCiphertext: false }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'T' }) }).catch(() => { });
+            // #endregion
             return msg.content;
         }
 
@@ -198,6 +259,9 @@ export const getSafeDisplayText = (msg, currentDeviceId) => {
 
     // 4. Tất cả trường hợp còn lại → label cố định
     // Đảm bảo luôn return string hợp lệ
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'messageValidation.js:220', message: 'getSafeDisplayText returning placeholder (fallback)', data: { ...logData, canRender, isEncryptedFlag: msg.is_encrypted === true, isContentCiphertext }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run3', hypothesisId: 'J' }) }).catch(() => { });
+    // #endregion
     return 'Đã mã hóa đầu cuối';
 };
 

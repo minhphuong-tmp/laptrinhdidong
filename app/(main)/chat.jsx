@@ -38,7 +38,7 @@ import {
     uploadMediaFile
 } from '../../services/chatService';
 import pinService from '../../services/pinService';
-import { canRenderPlaintext, getSafeDisplayText } from '../../utils/messageValidation';
+import { canRenderPlaintext, getSafeDisplayText, detectCiphertextFormat } from '../../utils/messageValidation';
 import performanceMetrics from '../../utils/performanceMetrics';
 
 // Component for call declined message
@@ -324,6 +324,7 @@ const ChatScreen = () => {
     const router = useRouter();
     const [messages, setMessages] = useState([]);
     const messagesRef = useRef([]); // Ref để lưu messages hiện tại cho decryptAllMessages
+    const prevPinUnlockedRef = useRef(false); // Ref để track previous pinUnlocked state
     const [conversation, setConversation] = useState(null);
 
     // Sync messagesRef với messages state
@@ -450,9 +451,12 @@ const ChatScreen = () => {
                             newMessages = mergeMessages([...prev, messageWithSender]);
                         }
 
+                        // CRITICAL: Deduplicate trước khi set state
+                        const deduplicatedMessages = deduplicateMessages(newMessages);
+                        
                         // CRITICAL: Sync messagesRef ngay lập tức
-                        messagesRef.current = newMessages;
-                        return newMessages;
+                        messagesRef.current = deduplicatedMessages;
+                        return deduplicatedMessages;
                     });
 
                     return;
@@ -549,7 +553,7 @@ const ChatScreen = () => {
                     setMessages(prev => {
                         // #region agent log
                         const matchingOptimistic = prev.find(optMsg => optMsg.id?.startsWith('temp-') && optMsg.sender_id === decryptedMessage.sender_id);
-                        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:549',message:'handleRealtimeMessage sender copy',data:{messageId:decryptedMessage.id,hasRuntimePlainText:!!decryptedMessage.runtime_plain_text,runtimePlainTextLength:decryptedMessage.runtime_plain_text?.length,hasMatchingOptimistic:!!matchingOptimistic,optimisticUiOptimisticText:matchingOptimistic?.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:549', message: 'handleRealtimeMessage sender copy', data: { messageId: decryptedMessage.id, hasRuntimePlainText: !!decryptedMessage.runtime_plain_text, runtimePlainTextLength: decryptedMessage.runtime_plain_text?.length, hasMatchingOptimistic: !!matchingOptimistic, optimisticUiOptimisticText: matchingOptimistic?.ui_optimistic_text?.substring(0, 20) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
                         // #endregion
                         // Kiểm tra message đã tồn tại chưa
                         const existingIndex = prev.findIndex(msg => msg.id === decryptedMessage.id);
@@ -592,9 +596,12 @@ const ChatScreen = () => {
                             // Việc này tránh thay đổi array length đột ngột gây jumping
                         }
 
+                        // CRITICAL: Deduplicate trước khi set state
+                        const deduplicatedMessages = deduplicateMessages(newMessages);
+                        
                         // CRITICAL: Sync messagesRef ngay lập tức
-                        messagesRef.current = newMessages;
-                        return newMessages;
+                        messagesRef.current = deduplicatedMessages;
+                        return deduplicatedMessages;
                     });
 
                 }
@@ -645,9 +652,12 @@ const ChatScreen = () => {
                             newMessages = mergeMessages([message, ...prev]);
                         }
 
+                        // CRITICAL: Deduplicate trước khi set state
+                        const deduplicatedMessages = deduplicateMessages(newMessages);
+                        
                         // CRITICAL: Sync messagesRef ngay lập tức
-                        messagesRef.current = newMessages;
-                        return newMessages;
+                        messagesRef.current = deduplicatedMessages;
+                        return deduplicatedMessages;
                     });
                     return;
                 }
@@ -837,6 +847,11 @@ const ChatScreen = () => {
             if (!user?.id) return;
 
             const isUnlocked = pinService.isUnlocked();
+            // CRITICAL: Init prevPinUnlockedRef với giá trị ban đầu trước khi set state
+            // Để tránh false positive khi PIN đã unlock từ trước
+            if (prevPinUnlockedRef.current === false) {
+                prevPinUnlockedRef.current = isUnlocked;
+            }
             setPinUnlocked(isUnlocked);
 
             // Check PIN từ server
@@ -863,23 +878,38 @@ const ChatScreen = () => {
     }, []);
 
     // CRITICAL: Re-decrypt messages khi ConversationKey trở nên available
-    // Trigger khi: conversationId thay đổi HOẶC pinUnlocked thay đổi
+    // Trigger khi: pinUnlocked thay đổi (KHÔNG trigger khi conversationId thay đổi - loadMessages đã decrypt rồi)
+    // CHỈ decrypt lại khi PIN unlock (để decrypt messages từ device khác)
     useEffect(() => {
         if (!conversationId) return;
+
+        // CRITICAL FIX: CHỈ decrypt khi PIN vừa unlock (false → true), KHÔNG decrypt khi quay lại conversation
+        // Sử dụng ref để track previous pinUnlocked state
+        const pinJustUnlocked = !prevPinUnlockedRef.current && pinUnlocked;
+        prevPinUnlockedRef.current = pinUnlocked;
+
+        if (!pinJustUnlocked) {
+            // PIN chưa unlock hoặc đã unlock từ trước → không decrypt
+            return;
+        }
 
         // Chờ một chút để đảm bảo messages đã được load
         const timeoutId = setTimeout(async () => {
             const conversationKeyService = require('../../services/conversationKeyService').default;
             const conversationKey = await conversationKeyService.getConversationKey(conversationId);
 
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:880', message: 'useEffect decrypt check (PIN just unlocked)', data: { conversationId, hasConversationKey: !!conversationKey, messagesRefLength: messagesRef.current.length, pinUnlocked, pinJustUnlocked }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run6', hypothesisId: 'P' }) }).catch(() => { });
+            // #endregion
+
             if (conversationKey && messagesRef.current.length > 0) {
-                console.log(`[USE_EFFECT_DECRYPT] ConversationKey available, re-decrypting messages for conversation ${conversationId}`);
+                console.log(`[USE_EFFECT_DECRYPT] PIN unlocked, re-decrypting messages for conversation ${conversationId}`);
                 await decryptAllMessages();
             }
         }, 100);
 
         return () => clearTimeout(timeoutId);
-    }, [conversationId, pinUnlocked]);
+    }, [pinUnlocked]); // CHỈ trigger khi pinUnlocked thay đổi, KHÔNG trigger khi conversationId thay đổi
 
     // FIX: Merge messages - Chỉ hiển thị MỘT bản, ưu tiên sender_copy nếu decrypt được
     // Nếu sender_copy decrypt thất bại → hiển thị receiver_message
@@ -890,8 +920,91 @@ const ChatScreen = () => {
         const deviceService = require('../../services/deviceService').default;
         deviceService.getOrCreateDeviceId().then(id => {
             currentDeviceIdRef.current = id;
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:922', message: 'currentDeviceIdRef set', data: { currentDeviceId: id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+            // #endregion
         }).catch(() => { });
     }, []);
+
+    // Helper function để deduplicate messages bằng Map
+    // CRITICAL: Chỉ giữ lại MỘT message cho mỗi ID, không phân biệt is_sender_copy
+    const deduplicateMessages = (messages) => {
+        if (!messages || messages.length === 0) return messages;
+        
+        // CRITICAL FIX: Tìm receiver messages từ thiết bị khác cần ẩn (có sender_copy tương ứng)
+        // Đảm bảo receiver messages bị ẩn TRƯỚC KHI deduplicate
+        const receiverMessageIdsToHide = new Set();
+        messages.forEach(msg => {
+            if (msg.is_sender_copy === true && !msg.id?.startsWith('temp-') && msg.sender_id !== user.id) {
+                // Tìm receiver message tương ứng
+                const matchingReceiver = messages.find(otherMsg => 
+                    otherMsg.is_sender_copy === false &&
+                    otherMsg.sender_id === msg.sender_id &&
+                    otherMsg.conversation_id === msg.conversation_id &&
+                    otherMsg.id !== msg.id &&
+                    Math.abs(new Date(otherMsg.created_at).getTime() - new Date(msg.created_at).getTime()) < 5000
+                );
+                if (matchingReceiver) {
+                    receiverMessageIdsToHide.add(matchingReceiver.id);
+                }
+            }
+        });
+        
+        const messageMap = new Map();
+        messages.forEach(msg => {
+            if (!msg.id) return;
+            
+            // CRITICAL FIX: Bỏ qua receiver messages từ thiết bị khác nếu có sender_copy
+            if (msg.is_sender_copy === false && msg.sender_id !== user.id && receiverMessageIdsToHide.has(msg.id)) {
+                return; // Bỏ qua receiver message này
+            }
+            
+            const existing = messageMap.get(msg.id);
+            // CRITICAL FIX: Với tin nhắn từ thiết bị khác, ưu tiên sender_copy (encrypted) hơn receiver (plaintext)
+            // Với tin nhắn mình gửi, ưu tiên receiver (plaintext) hơn sender_copy (encrypted)
+            if (!existing) {
+                messageMap.set(msg.id, msg);
+            } else if (msg.sender_id !== user.id) {
+                // Tin nhắn từ thiết bị khác → ưu tiên sender_copy (encrypted)
+                if (msg.is_sender_copy && !existing.is_sender_copy) {
+                    messageMap.set(msg.id, msg);
+                } else if (!msg.is_sender_copy && existing.is_sender_copy) {
+                    // Giữ existing (sender_copy)
+                    // Không cần làm gì
+                } else if (msg.runtime_plain_text && !existing.runtime_plain_text) {
+                    // Cả hai đều là sender_copy hoặc receiver, ưu tiên có runtime_plain_text
+                    messageMap.set(msg.id, msg);
+                } else {
+                    // Giữ existing
+                    // Không cần làm gì
+                }
+            } else {
+                // Tin nhắn mình gửi → ưu tiên receiver (plaintext) hơn sender_copy (encrypted)
+                if (!msg.is_sender_copy && existing.is_sender_copy) {
+                    messageMap.set(msg.id, msg);
+                } else if (msg.is_sender_copy && !existing.is_sender_copy) {
+                    // Giữ existing (receiver)
+                    // Không cần làm gì
+                } else if (msg.runtime_plain_text && !existing.runtime_plain_text) {
+                    // Cả hai đều là sender_copy hoặc receiver, ưu tiên có runtime_plain_text
+                    messageMap.set(msg.id, msg);
+                } else {
+                    // Giữ existing
+                    // Không cần làm gì
+                }
+            }
+        });
+        const deduplicated = Array.from(messageMap.values());
+        
+        // #region agent log - Track deduplicate
+        const duplicateIds = messages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+        if (duplicateIds.length > 0) {
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:917', message: 'deduplicateMessages removed duplicates', data: { originalCount: messages.length, deduplicatedCount: deduplicated.length, duplicateIds: duplicateIds.slice(0, 5), removedCount: messages.length - deduplicated.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'AC' }) }).catch(() => { });
+        }
+        // #endregion
+        
+        return deduplicated;
+    };
 
     const mergeMessages = (messages) => {
         if (!messages || messages.length === 0) return messages;
@@ -923,58 +1036,89 @@ const ChatScreen = () => {
             }
         });
 
-        // CRITICAL E2EE FIX: Chỉ ẩn receiver message khi sender_copy ĐÃ CÓ runtime_plain_text
-        // Nguyên tắc: plaintext > encrypted
-        // Receiver plaintext luôn được ưu tiên hiển thị hơn sender_copy encrypted
+        // CRITICAL E2EE FIX: Ẩn receiver message khi có sender_copy
+        // Nguyên tắc E2EE: 
+        // - Với tin nhắn từ người khác: Ẩn receiver (plaintext), chỉ hiển thị sender_copy (encrypted) → "Đã mã hóa đầu cuối"
+        // - Với tin nhắn mình gửi: Ưu tiên receiver (plaintext) hơn sender_copy (encrypted) → hiển thị plaintext
         const receiverMessageIdsToHide = new Set();
+        const senderCopyMessageIdsToHide = new Set();
         messages.forEach(msg => {
-            // CHỈ xử lý sender_copy ĐÃ CÓ runtime_plain_text (đã decrypt)
-            if (msg.is_sender_copy === true &&
-                !msg.id?.startsWith('temp-') &&
-                msg.runtime_plain_text) { // CRITICAL: Chỉ ẩn receiver khi sender_copy đã decrypt
+            if (msg.is_sender_copy === true && !msg.id?.startsWith('temp-')) {
                 // Tìm receiver message tương ứng (cùng sender, conversation, thời gian gần nhau)
                 messages.forEach(otherMsg => {
                     if (otherMsg.is_sender_copy === false &&
                         otherMsg.sender_id === msg.sender_id &&
-                        otherMsg.conversation_id === msg.conversation_id) {
-                        // So sánh thời gian (chênh lệch < 2 giây để chính xác hơn, tránh filter nhầm)
+                        otherMsg.conversation_id === msg.conversation_id &&
+                        otherMsg.id !== msg.id) { // Đảm bảo không phải cùng message
+                        // So sánh thời gian (chênh lệch < 5 giây để chính xác hơn, tránh miss)
                         const timeDiff = Math.abs(
                             new Date(msg.created_at).getTime() - new Date(otherMsg.created_at).getTime()
                         );
-                        if (timeDiff < 2000) {
-                            receiverMessageIdsToHide.add(otherMsg.id);
+                        if (timeDiff < 5000) { // Tăng từ 2s lên 5s để tránh miss
+                            // CRITICAL: Chỉ ẩn receiver khi là tin nhắn từ người khác
+                            // Với tin nhắn mình gửi (sender_id === user.id), ưu tiên receiver (plaintext) hơn sender_copy (encrypted)
+                            if (msg.sender_id !== user.id) {
+                                // Tin nhắn từ người khác → ẩn receiver, hiển thị sender_copy (encrypted)
+                                receiverMessageIdsToHide.add(otherMsg.id);
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1018', message: 'mergeMessages marking receiver to hide (has sender_copy from other user)', data: { senderCopyId: msg.id, receiverId: otherMsg.id, senderId: msg.sender_id, currentUserId: user.id, senderCopyIsEncrypted: msg.is_encrypted, receiverIsEncrypted: otherMsg.is_encrypted, timeDiff }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run15', hypothesisId: 'OTHER1' }) }).catch(() => { });
+                                // #endregion
+                            } else {
+                                // Tin nhắn mình gửi → ẩn sender_copy, hiển thị receiver (plaintext)
+                                senderCopyMessageIdsToHide.add(msg.id);
+                            }
                         }
                     }
                 });
             }
         });
 
+        // PHASE 2: Loop qua TẤT CẢ receiver messages từ người khác để đảm bảo chúng bị ẩn nếu có sender_copy
+        // Điều này đảm bảo không bỏ sót receiver message nào (chạy TRƯỚC khi loop qua messages để thêm vào mergedMessages)
+        messages.forEach(msg => {
+            if (msg.is_sender_copy === false && msg.sender_id !== user.id) {
+                // Kiểm tra xem có sender_copy tương ứng không
+                const matchingSenderCopy = messages.find(otherMsg => 
+                    otherMsg.is_sender_copy === true &&
+                    otherMsg.sender_id === msg.sender_id &&
+                    otherMsg.conversation_id === msg.conversation_id &&
+                    otherMsg.id !== msg.id &&
+                    Math.abs(new Date(otherMsg.created_at).getTime() - new Date(msg.created_at).getTime()) < 5000
+                );
+                
+                if (matchingSenderCopy && !receiverMessageIdsToHide.has(msg.id)) {
+                    // Có sender_copy nhưng receiver chưa bị mark → mark ngay
+                    receiverMessageIdsToHide.add(msg.id);
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1036', message: 'mergeMessages PHASE2 fixing receiver message (has sender_copy but not marked)', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, senderCopyId: matchingSenderCopy.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run18', hypothesisId: 'DEVICE_A_FIX' }) }).catch(() => { });
+                }
+            }
+        });
+
         // DEBUG: Log để kiểm tra filter
-        if (__DEV__ && receiverMessageIdsToHide.size > 0) {
-            console.log('[MERGE_MESSAGES] Filtering receiver messages:', {
+        if (__DEV__ && (receiverMessageIdsToHide.size > 0 || senderCopyMessageIdsToHide.size > 0)) {
+            console.log('[MERGE_MESSAGES] Filtering messages:', {
                 totalReceiverToHide: receiverMessageIdsToHide.size,
-                receiverIds: Array.from(receiverMessageIdsToHide).slice(0, 5)
+                totalSenderCopyToHide: senderCopyMessageIdsToHide.size,
+                receiverIds: Array.from(receiverMessageIdsToHide).slice(0, 5),
+                senderCopyIds: Array.from(senderCopyMessageIdsToHide).slice(0, 5)
             });
         }
+        
+        // #region agent log
+        if (receiverMessageIdsToHide.size > 0 || senderCopyMessageIdsToHide.size > 0) {
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1026', message: 'mergeMessages filtering messages', data: { totalReceiverToHide: receiverMessageIdsToHide.size, totalSenderCopyToHide: senderCopyMessageIdsToHide.size, receiverIds: Array.from(receiverMessageIdsToHide).slice(0, 5), senderCopyIds: Array.from(senderCopyMessageIdsToHide).slice(0, 5), currentUserId: user.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run9', hypothesisId: 'SELF1' }) }).catch(() => { });
+        }
+        // #endregion
 
         messages.forEach(msg => {
-            // Filter duplicate theo id
+            // CRITICAL FIX: Filter duplicate theo id - nếu đã có trong seen, bỏ qua hoàn toàn
+            // Không update existing message vì có thể gây duplicate
             if (seen.has(msg.id)) {
-                // CRITICAL: Nếu message đã được thêm, preserve runtime_plain_text nếu có
-                const existingMsg = mergedMessages.find(m => m.id === msg.id);
-                if (existingMsg && msg.runtime_plain_text && !existingMsg.runtime_plain_text) {
-                    // New message có runtime_plain_text mà existing không có → update
-                    const index = mergedMessages.findIndex(m => m.id === msg.id);
-                    mergedMessages[index] = {
-                        ...existingMsg,
-                        runtime_plain_text: msg.runtime_plain_text,
-                        is_encrypted: false
-                    };
-                    console.log(`[MERGE_MESSAGES] Preserved runtime_plain_text for duplicate message ${msg.id}`);
-                } else if (existingMsg && existingMsg.runtime_plain_text && !msg.runtime_plain_text) {
-                    // Existing có runtime_plain_text mà new không có → giữ existing
-                    // Không cần làm gì, existing đã có runtime_plain_text
-                }
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:982', message: 'mergeMessages skipping duplicate message', data: { messageId: msg.id, hasRuntimePlainText: !!msg.runtime_plain_text, existingHasRuntimePlainText: !!mergedMessages.find(m => m.id === msg.id)?.runtime_plain_text }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'V' }) }).catch(() => { });
+                // #endregion
+                // Duplicate detected - bỏ qua hoàn toàn để tránh duplicate
+                // Ưu tiên message đầu tiên (đã được thêm vào mergedMessages)
                 return;
             }
 
@@ -992,7 +1136,7 @@ const ChatScreen = () => {
                     return timeDiff < 5000;
                 });
                 // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:982',message:'mergeMessages optimistic check',data:{optimisticId:msg.id,hasDecryptedSenderCopy,hasUiOptimisticText:!!msg.ui_optimistic_text,uiOptimisticText:msg.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:982', message: 'mergeMessages optimistic check', data: { optimisticId: msg.id, hasDecryptedSenderCopy, hasUiOptimisticText: !!msg.ui_optimistic_text, uiOptimisticText: msg.ui_optimistic_text?.substring(0, 20) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
                 // #endregion
                 if (hasDecryptedSenderCopy) {
                     // Đã có sender_copy với runtime_plain_text → bỏ qua optimistic
@@ -1000,23 +1144,101 @@ const ChatScreen = () => {
                 }
             }
 
-            // CRITICAL E2EE FIX: Chỉ ẩn receiver message khi sender_copy ĐÃ CÓ runtime_plain_text
-            // Nguyên tắc: plaintext > encrypted
-            // Nếu sender_copy chưa decrypt (không có runtime_plain_text) → GIỮ receiver message
-            if (msg.is_sender_copy === false && receiverMessageIdsToHide.has(msg.id)) {
-                // Đã có sender_copy với runtime_plain_text → bỏ qua receiver message
-                // (receiverMessageIdsToHide chỉ chứa IDs của receiver messages tương ứng với sender_copy đã decrypt)
+            // CRITICAL E2EE FIX: Ẩn receiver message khi có sender_copy (chỉ với tin nhắn từ người khác)
+            // Với tin nhắn mình gửi: ẩn sender_copy, hiển thị receiver (plaintext)
+            // CRITICAL: Check này PHẢI chạy TRƯỚC khi check hasRenderableText
+            if (msg.is_sender_copy === false && msg.sender_id !== user.id) {
+                // Double check: Nếu có sender_copy tương ứng, mark receiver để ẩn
+                const matchingSenderCopy = messages.find(otherMsg => 
+                    otherMsg.is_sender_copy === true &&
+                    otherMsg.sender_id === msg.sender_id &&
+                    otherMsg.conversation_id === msg.conversation_id &&
+                    otherMsg.id !== msg.id &&
+                    Math.abs(new Date(otherMsg.created_at).getTime() - new Date(msg.created_at).getTime()) < 5000
+                );
+                
+                if (matchingSenderCopy && !receiverMessageIdsToHide.has(msg.id)) {
+                    receiverMessageIdsToHide.add(msg.id);
+                }
+                
+                if (receiverMessageIdsToHide.has(msg.id)) {
+                    // Đã có sender_copy từ người khác → bỏ qua receiver message
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1144', message: 'mergeMessages hiding receiver message (has sender_copy from other user)', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, isSenderCopy: msg.is_sender_copy, isEncrypted: msg.is_encrypted, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 50), hasRuntimePlainText: !!msg.runtime_plain_text, matchingSenderCopyId: matchingSenderCopy?.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run20', hypothesisId: 'CACHE_FIX2' }) }).catch(() => { });
+                    // #endregion
+                    return;
+                }
+            }
+            
+            // CRITICAL FIX: Ẩn sender_copy khi là tin nhắn mình gửi (ưu tiên receiver plaintext)
+            if (msg.is_sender_copy === true && senderCopyMessageIdsToHide.has(msg.id)) {
+                // Tin nhắn mình gửi → ẩn sender_copy, hiển thị receiver (plaintext)
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1095', message: 'mergeMessages hiding sender_copy (self message, prefer receiver plaintext)', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, isSenderCopy: msg.is_sender_copy, isEncrypted: msg.is_encrypted, hasRuntimePlainText: !!msg.runtime_plain_text, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 50) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run15', hypothesisId: 'OTHER1' }) }).catch(() => { });
+                // #endregion
                 return;
             }
+            
+            // #region agent log - Track receiver messages from other users (PHASE 3: during merge loop)
+            if (msg.is_sender_copy === false && msg.sender_id !== user.id) {
+                const matchingSenderCopy = messages.find(otherMsg => 
+                    otherMsg.is_sender_copy === true &&
+                    otherMsg.sender_id === msg.sender_id &&
+                    otherMsg.conversation_id === msg.conversation_id &&
+                    otherMsg.id !== msg.id &&
+                    Math.abs(new Date(otherMsg.created_at).getTime() - new Date(msg.created_at).getTime()) < 5000
+                );
+                
+                const shouldBeHidden = receiverMessageIdsToHide.has(msg.id);
+                
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1127', message: 'mergeMessages PHASE3 processing receiver message from other user', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, isSenderCopy: false, isEncrypted: msg.is_encrypted, hasRuntimePlainText: !!msg.runtime_plain_text, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 50), shouldBeHidden, hasSenderCopy: !!matchingSenderCopy, senderCopyId: matchingSenderCopy?.id, senderCopyIsEncrypted: matchingSenderCopy?.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run19', hypothesisId: 'CACHE_FIX' }) }).catch(() => { });
+                
+                // CRITICAL FIX: Nếu có sender_copy nhưng receiver không bị mark → mark ngay (double check)
+                if (matchingSenderCopy && !shouldBeHidden) {
+                    receiverMessageIdsToHide.add(msg.id);
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1179', message: 'mergeMessages PHASE3 fixing receiver message (has sender_copy but not marked)', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, senderCopyId: matchingSenderCopy.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run20', hypothesisId: 'CACHE_FIX2' }) }).catch(() => { });
+                    // Return ngay để không thêm receiver message vào mergedMessages
+                    return;
+                }
+                
+                // CRITICAL FIX: Nếu receiver đã bị mark nhưng vẫn đến đây → return ngay
+                if (shouldBeHidden) {
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1187', message: 'mergeMessages PHASE3 receiver already marked to hide', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run20', hypothesisId: 'CACHE_FIX2' }) }).catch(() => { });
+                    return;
+                }
+            }
+            // #endregion
 
             // NEW ARCHITECTURE: CHỈ push message khi có text renderable hoặc is_encrypted=true
             // Không push message không có text + không có encrypted placeholder
-            const hasRenderableText = msg.runtime_plain_text ||
+            // CRITICAL FIX: Receiver messages từ thiết bị khác KHÔNG được coi là có renderable text
+            // nếu chúng đã bị mark để ẩn (có sender_copy tương ứng)
+            const isReceiverFromOtherUser = msg.is_sender_copy === false && msg.sender_id !== user.id;
+            const shouldHideReceiver = isReceiverFromOtherUser && receiverMessageIdsToHide.has(msg.id);
+            
+            const hasRenderableText = !shouldHideReceiver && (
+                msg.runtime_plain_text ||
                 msg.ui_optimistic_text ||
                 (msg.message_type === 'text' && !msg.is_encrypted && msg.content) ||
-                (msg.message_type !== 'text'); // Non-text messages (image, video, etc.)
+                (msg.message_type !== 'text') // Non-text messages (image, video, etc.)
+            );
 
             const hasEncryptedPlaceholder = msg.is_encrypted === true && msg.message_type === 'text';
+
+            // #region agent log - Track sender_copy from other users
+            if (msg.is_sender_copy === true && msg.sender_id !== user.id) {
+                // Kiểm tra xem receiver message tương ứng có bị ẩn không
+                const matchingReceiver = messages.find(otherMsg => 
+                    otherMsg.is_sender_copy === false &&
+                    otherMsg.sender_id === msg.sender_id &&
+                    otherMsg.conversation_id === msg.conversation_id &&
+                    otherMsg.id !== msg.id &&
+                    Math.abs(new Date(otherMsg.created_at).getTime() - new Date(msg.created_at).getTime()) < 5000
+                );
+                
+                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1140', message: 'mergeMessages processing sender_copy from other user', data: { messageId: msg.id, senderId: msg.sender_id, currentUserId: user.id, isSenderCopy: true, isEncrypted: msg.is_encrypted, hasRuntimePlainText: !!msg.runtime_plain_text, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 50), hasRenderableText, hasEncryptedPlaceholder, encryptionVersion: msg.encryption_version, hasMatchingReceiver: !!matchingReceiver, receiverId: matchingReceiver?.id, receiverIsHidden: matchingReceiver ? receiverMessageIdsToHide.has(matchingReceiver.id) : false }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run17', hypothesisId: 'DEVICE_A' }) }).catch(() => { });
+            }
+            // #endregion
 
             if (hasRenderableText || hasEncryptedPlaceholder) {
                 seen.add(msg.id);
@@ -1040,11 +1262,11 @@ const ChatScreen = () => {
                     // New message đã có runtime_plain_text → dùng nó
                     finalMsg = msg;
                 }
-                
+
                 // CRITICAL: Preserve ui_optimistic_text từ optimistic message nếu sender_copy chưa decrypt
                 // Nếu finalMsg là sender_copy chưa decrypt và có optimistic tương ứng → preserve ui_optimistic_text
                 if (finalMsg.is_sender_copy && !finalMsg.runtime_plain_text && !finalMsg.ui_optimistic_text) {
-                    const matchingOptimistic = messages.find(optMsg => 
+                    const matchingOptimistic = messages.find(optMsg =>
                         optMsg.id?.startsWith('temp-') &&
                         optMsg.sender_id === finalMsg.sender_id &&
                         optMsg.conversation_id === finalMsg.conversation_id &&
@@ -1060,7 +1282,7 @@ const ChatScreen = () => {
                                 ui_optimistic_text: matchingOptimistic.ui_optimistic_text
                             };
                             // #region agent log
-                            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1041',message:'mergeMessages preserved ui_optimistic_text',data:{messageId:finalMsg.id,uiOptimisticText:finalMsg.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1041', message: 'mergeMessages preserved ui_optimistic_text', data: { messageId: finalMsg.id, uiOptimisticText: finalMsg.ui_optimistic_text?.substring(0, 20) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
                             // #endregion
                         }
                     }
@@ -1068,7 +1290,7 @@ const ChatScreen = () => {
 
                 // #region agent log
                 if (finalMsg.id?.startsWith('temp-') || (finalMsg.is_sender_copy && !finalMsg.runtime_plain_text)) {
-                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1042',message:'mergeMessages final message',data:{messageId:finalMsg.id,hasUiOptimisticText:!!finalMsg.ui_optimistic_text,uiOptimisticText:finalMsg.ui_optimistic_text?.substring(0,20),hasRuntimePlainText:!!finalMsg.runtime_plain_text,hasContent:!!finalMsg.content,contentLength:finalMsg.content?.length,isEncrypted:finalMsg.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1042', message: 'mergeMessages final message', data: { messageId: finalMsg.id, hasUiOptimisticText: !!finalMsg.ui_optimistic_text, uiOptimisticText: finalMsg.ui_optimistic_text?.substring(0, 20), hasRuntimePlainText: !!finalMsg.runtime_plain_text, hasContent: !!finalMsg.content, contentLength: finalMsg.content?.length, isEncrypted: finalMsg.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
                 }
                 // #endregion
                 mergedMessages.push(finalMsg);
@@ -1089,15 +1311,32 @@ const ChatScreen = () => {
             });
         }
 
+        // CRITICAL FIX: Deduplicate một lần nữa bằng Map để đảm bảo không có duplicate
+        // Có thể có duplicate nếu logic trên không hoạt động đúng
+        // Sử dụng helper function deduplicateMessages để đảm bảo logic nhất quán
+        const finalMergedMessages = deduplicateMessages(mergedMessages);
+        
+        // #region agent log
+        const duplicateIdsInFinal = finalMergedMessages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+        const uniqueCountAfter = new Set(finalMergedMessages.map(m => m.id)).size;
+        const hasDuplicatesInFinal = duplicateIdsInFinal.length > 0;
+        if (hasDuplicatesInFinal || duplicateCheck.size !== mergedMessages.length) {
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1163', message: 'mergeMessages duplicate detected and fixed', data: { mergedCount: mergedMessages.length, finalMergedCount: finalMergedMessages.length, uniqueCountBefore: duplicateCheck.size, uniqueCountAfter, duplicateIdsInFinal: duplicateIdsInFinal.slice(0, 5), hadDuplicatesBefore: duplicateCheck.size !== mergedMessages.length, hasDuplicatesAfter: hasDuplicatesInFinal }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'AA' }) }).catch(() => { });
+        }
+        // #endregion
+
         // DEBUG: Log để kiểm tra số lượng messages
         if (__DEV__) {
             const originalCount = messages.length;
             const mergedCount = mergedMessages.length;
-            if (originalCount !== mergedCount) {
+            const finalCount = finalMergedMessages.length;
+            if (originalCount !== mergedCount || mergedCount !== finalCount) {
                 console.log('[MERGE_MESSAGES] Messages filtered:', {
                     original: originalCount,
                     merged: mergedCount,
+                    final: finalCount,
                     filtered: originalCount - mergedCount,
+                    deduplicated: mergedCount - finalCount,
                     senderCopyCount: Array.from(messages).filter(m => m.is_sender_copy === true && !m.id?.startsWith('temp-')).length,
                     receiverCount: Array.from(messages).filter(m => m.is_sender_copy === false).length,
                     receiverFiltered: receiverMessageIdsToHide.size
@@ -1105,7 +1344,7 @@ const ChatScreen = () => {
             }
         }
 
-        return mergedMessages;
+        return finalMergedMessages;
     };
 
     const loadMessages = async () => {
@@ -1132,8 +1371,14 @@ const ChatScreen = () => {
             // Message từ DB phải được treat như CHƯA TỪNG DECRYPT
             // Không được assume message đã từng decrypt
             const sanitizedCachedMessages = cachedMessages.map(msg => {
+                // #region agent log
+                if (msg.sender_id !== user.id && msg.message_type === 'text') {
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1373', message: 'loadMessages from cache - other user message', data: { messageId: msg.id, senderId: msg.sender_id, senderDeviceId: msg.sender_device_id, isEncrypted: msg.is_encrypted, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 30), isSenderCopy: msg.is_sender_copy }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+                }
+                // #endregion
                 // Clear runtime state cho TẤT CẢ messages (không chỉ sender_copy)
                 const { runtime_plain_text, decrypted_on_device_id, ui_optimistic_text, ...cleanMessage } = msg;
+
                 return {
                     ...cleanMessage,
                     // Đảm bảo runtime state bị clear
@@ -1170,22 +1415,68 @@ const ChatScreen = () => {
             });
 
             // NEW ARCHITECTURE: Decrypt bằng ConversationKey
-            // ConversationKey có thể có trong cache (device hiện tại) hoặc cần PIN unlock (device khác)
+            // CRITICAL FIX: CHỈ decrypt messages từ device hiện tại (có ConversationKey trong cache)
+            // KHÔNG decrypt messages từ device khác khi load từ cache (chỉ decrypt khi PIN vừa unlock)
             const conversationKeyService = require('../../services/conversationKeyService').default;
             const encryptionService = require('../../services/encryptionService').default;
 
-            // Lấy ConversationKey (ưu tiên cache, sau đó decrypt từ SecureStore nếu có PIN)
-            const conversationKey = await conversationKeyService.getConversationKey(conversationId);
+            // CRITICAL FIX: CHỈ decrypt messages từ device hiện tại khi load từ cache
+            // Kiểm tra xem ConversationKey có trong cache TRƯỚC KHI gọi getConversationKey()
+            // Nếu không có trong cache → không decrypt (messages từ device khác, cần PIN unlock)
+            const pinService = require('../../services/pinService').default;
+            const isPinUnlocked = pinService.isUnlocked();
+            
+            // CRITICAL: Kiểm tra key có trong cache TRƯỚC KHI gọi getConversationKey()
+            // getConversationKey() có thể decrypt từ SecureStore nếu PIN đã unlock, nhưng ta chỉ muốn decrypt từ cache
+            const hasKeyInCache = conversationKeyService.keyCache && conversationKeyService.keyCache.has(conversationId);
+            
+            // CHỈ decrypt khi:
+            // 1. Key có trong cache (device hiện tại)
+            // 2. PIN chưa unlock (nếu PIN đã unlock, decryptAllMessages sẽ xử lý messages từ device khác)
+            const shouldDecryptInLoadMessages = hasKeyInCache && !isPinUnlocked;
+            
+            // Lấy ConversationKey (chỉ khi cần decrypt)
+            const conversationKey = shouldDecryptInLoadMessages 
+                ? await conversationKeyService.getConversationKey(conversationId)
+                : null;
+
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1335', message: 'loadMessages from cache - checking ConversationKey', data: { conversationId, hasKeyInCache, isPinUnlocked, shouldDecryptInLoadMessages, hasConversationKey: !!conversationKey }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run13', hypothesisId: 'PERF2' }) }).catch(() => { });
+            // #endregion
+
+            // CRITICAL: currentDeviceId đã được set ở trên (trong sanitize), không cần set lại
+
+            // CRITICAL: Đảm bảo currentDeviceId đã được set trước khi decrypt
+            const deviceService = require('../../services/deviceService').default;
+            let currentDeviceId = currentDeviceIdRef.current;
+            if (!currentDeviceId) {
+                // Nếu chưa có trong ref, lấy từ service
+                try {
+                    currentDeviceId = await deviceService.getOrCreateDeviceId();
+                    currentDeviceIdRef.current = currentDeviceId;
+                } catch (error) {
+                    console.error('Error getting device ID:', error);
+                    currentDeviceId = null;
+                }
+            }
 
             const decryptPromises = sortedCached.map(async (msg) => {
                 // CRITICAL: CHỈ decrypt messages có encryption_version >= 3 (ConversationKey architecture)
-                // Messages cũ (v1/v2) được mã hóa bằng DeviceKey, KHÔNG thể decrypt bằng ConversationKey
+                // CRITICAL FIX: CHỈ decrypt messages từ device hiện tại khi load từ cache
+                // KHÔNG decrypt messages từ device khác khi load từ cache (chỉ decrypt khi PIN vừa unlock trong decryptAllMessages)
+                const isFromCurrentDevice = currentDeviceId && msg.sender_device_id === currentDeviceId;
+                
                 if (msg.is_encrypted === true &&
                     msg.message_type === 'text' &&
-                    conversationKey &&
+                    shouldDecryptInLoadMessages && // CHỈ decrypt khi PIN chưa unlock (device hiện tại có key trong cache)
+                    isFromCurrentDevice && // CRITICAL: CHỈ decrypt messages từ device hiện tại
                     !msg.runtime_plain_text &&
                     msg.encryption_version != null &&
                     msg.encryption_version >= 3) { // CHỈ decrypt v3+ (phải check != null để tránh null/undefined)
+
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1241', message: 'decrypting cached message from current device', data: { messageId: msg.id, isEncrypted: msg.is_encrypted, encryptionVersion: msg.encryption_version, hasConversationKey: !!conversationKey, contentLength: msg.content?.length, senderDeviceId: msg.sender_device_id, currentDeviceId, isFromCurrentDevice }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'S' }) }).catch(() => { });
+                    // #endregion
 
                     try {
                         const decryptedContent = await encryptionService.decryptMessageWithConversationKey(
@@ -1194,15 +1485,41 @@ const ChatScreen = () => {
                         );
 
                         if (decryptedContent && decryptedContent.trim() !== '') {
+                            // #region agent log
+                            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1195', message: 'decrypted cached message successfully', data: { messageId: msg.id, decryptedContentLength: decryptedContent.length, decryptedContentPreview: decryptedContent.substring(0, 30) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'G' }) }).catch(() => { });
+                            // #endregion
                             return {
                                 ...msg,
                                 runtime_plain_text: decryptedContent,
                                 decryption_error: false
                             };
+                        } else {
+                            // #region agent log
+                            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1202', message: 'decrypt cached message returned empty', data: { messageId: msg.id, isEncrypted: msg.is_encrypted, encryptionVersion: msg.encryption_version }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'G' }) }).catch(() => { });
+                            // #endregion
                         }
                     } catch (error) {
                         console.error('Error decrypting message in loadMessages:', error);
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1207', message: 'error decrypting cached message', data: { messageId: msg.id, error: error.message }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'G' }) }).catch(() => { });
+                        // #endregion
                     }
+                } else {
+                    // #region agent log - Track why message is not being decrypted
+                    if (msg.is_encrypted === true && msg.message_type === 'text') {
+                        const deviceService = require('../../services/deviceService').default;
+                        const currentDeviceId = currentDeviceIdRef.current;
+                        const isFromCurrentDevice = currentDeviceId && msg.sender_device_id === currentDeviceId;
+                        let skipReason = 'unknown';
+                        if (!conversationKey) skipReason = 'no_conversation_key';
+                        else if (msg.runtime_plain_text) skipReason = 'already_decrypted';
+                        else if (msg.encryption_version < 3) skipReason = 'legacy_version';
+                        else if (!isFromCurrentDevice) skipReason = 'from_other_device';
+                        else if (!shouldDecryptInLoadMessages) skipReason = 'pin_unlocked_or_no_cache';
+                        
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1267', message: 'skipping decrypt cached message', data: { messageId: msg.id, isEncrypted: msg.is_encrypted, encryptionVersion: msg.encryption_version, hasConversationKey: !!conversationKey, hasRuntimePlainText: !!msg.runtime_plain_text, isFromCurrentDevice, senderDeviceId: msg.sender_device_id, currentDeviceId, skipReason }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run6', hypothesisId: 'R' }) }).catch(() => { });
+                    }
+                    // #endregion
                 }
                 // Skip messages cũ (v1/v2) - không thể decrypt bằng ConversationKey
                 // Giữ nguyên encrypted, hiển thị placeholder
@@ -1211,8 +1528,39 @@ const ChatScreen = () => {
 
             const decryptedCached = await Promise.all(decryptPromises);
 
-            // Vì đã clear messages state trước khi load, không cần merge với prev
-            setMessages(mergeMessages(decryptedCached));
+            // #region agent log - Track receiver vs sender_copy from cache
+            const receiverMessages = decryptedCached.filter(m => m.is_sender_copy === false);
+            const senderCopyMessages = decryptedCached.filter(m => m.is_sender_copy === true);
+            const receiverFromOtherUsers = receiverMessages.filter(m => m.sender_id !== user.id);
+            const senderCopyFromOtherUsers = senderCopyMessages.filter(m => m.sender_id !== user.id);
+            const messagesWithPlaintext = decryptedCached.filter(m => m.runtime_plain_text);
+            const messagesShouldBeEncrypted = decryptedCached.filter(m => m.is_encrypted === true && m.encryption_version >= 3 && m.runtime_plain_text);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1437', message: 'loadMessages before mergeMessages', data: { conversationId, decryptedCachedCount: decryptedCached.length, receiverCount: receiverMessages.length, senderCopyCount: senderCopyMessages.length, receiverFromOtherUsersCount: receiverFromOtherUsers.length, senderCopyFromOtherUsersCount: senderCopyFromOtherUsers.length, messagesWithRuntimePlaintext: messagesWithPlaintext.length, messagesShouldBeEncryptedButHavePlaintext: messagesShouldBeEncrypted.length, sampleReceiverFromOtherUsers: receiverFromOtherUsers.slice(0, 3).map(m => ({ id: m.id, senderId: m.sender_id, isEncrypted: m.is_encrypted, contentPreview: m.content?.substring(0, 50) })), sampleSenderCopyFromOtherUsers: senderCopyFromOtherUsers.slice(0, 3).map(m => ({ id: m.id, senderId: m.sender_id, isEncrypted: m.is_encrypted, contentPreview: m.content?.substring(0, 50) })) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run17', hypothesisId: 'DEVICE_A' }) }).catch(() => { });
+            // #endregion
+
+            // PERFORMANCE FIX: Chỉ gọi mergeMessages một lần (mergeMessages đã có deduplicate bên trong)
+            // mergeMessages đã gọi deduplicateMessages ở cuối, không cần deduplicate thêm
+            // CRITICAL FIX: mergeMessages sẽ ẩn receiver messages từ thiết bị khác khi có sender_copy
+            const finalMergedMessages = mergeMessages(decryptedCached);
+            
+            // #region agent log - Track merged messages after mergeMessages
+            const mergedReceiverFromOtherUsers = finalMergedMessages.filter(m => m.is_sender_copy === false && m.sender_id !== user.id);
+            const mergedSenderCopyFromOtherUsers = finalMergedMessages.filter(m => m.is_sender_copy === true && m.sender_id !== user.id);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1458', message: 'loadMessages after mergeMessages (from cache)', data: { conversationId, finalMergedCount: finalMergedMessages.length, mergedReceiverFromOtherUsersCount: mergedReceiverFromOtherUsers.length, mergedSenderCopyFromOtherUsersCount: mergedSenderCopyFromOtherUsers.length, sampleMergedReceiver: mergedReceiverFromOtherUsers.slice(0, 3).map(m => ({ id: m.id, senderId: m.sender_id, isEncrypted: m.is_encrypted, contentPreview: m.content?.substring(0, 50) })), sampleMergedSenderCopy: mergedSenderCopyFromOtherUsers.slice(0, 3).map(m => ({ id: m.id, senderId: m.sender_id, isEncrypted: m.is_encrypted, contentPreview: m.content?.substring(0, 50) })) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run18', hypothesisId: 'CACHE_FIX' }) }).catch(() => { });
+            // #endregion
+            
+            // #region agent log
+            const duplicateIdsInFinalMerged = finalMergedMessages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+            const uniqueCountInFinalMerged = new Set(finalMergedMessages.map(m => m.id)).size;
+            const totalLoadTime = Date.now() - cacheStartTime;
+            const messagesWithRuntimePlainText = finalMergedMessages.filter(m => m.runtime_plain_text);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1405', message: 'loadMessages after mergeMessages (optimized)', data: { conversationId, cachedCount: decryptedCached.length, finalMergedCount: finalMergedMessages.length, uniqueCount: uniqueCountInFinalMerged, duplicateIdsInFinalMerged: duplicateIdsInFinalMerged.slice(0, 5), hasDuplicatesInFinalMerged: duplicateIdsInFinalMerged.length > 0, totalLoadTimeMs: totalLoadTime, messagesWithRuntimePlainTextCount: messagesWithRuntimePlainText.length, sampleMessagesWithRuntimePlainText: messagesWithRuntimePlainText.slice(0, 3).map(m => ({ id: m.id, senderDeviceId: m.sender_device_id, currentDeviceId, runtimePlainTextPreview: m.runtime_plain_text?.substring(0, 30) })) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run13', hypothesisId: 'PERF2' }) }).catch(() => { });
+            // #endregion
+
+            // CRITICAL: Sync messagesRef ngay lập tức với final merged messages
+            // PERFORMANCE FIX: Set state ngay lập tức để hiển thị messages với runtime_plain_text đã preserve
+            messagesRef.current = finalMergedMessages;
+            setMessages(finalMergedMessages);
             setLoading(false);
 
             // Fetch messages mới từ DB sau khi load cache để đảm bảo có messages mới nhất
@@ -1225,10 +1573,31 @@ const ChatScreen = () => {
                     : null;
 
                 if (latestCachedTime) {
-                    const newMessages = await getNewMessages(conversationId, user.id, latestCachedTime);
+                    // CRITICAL FIX: Lấy IDs của messages đã có trong cache để exclude
+                    const cachedMessageIds = new Set(finalMergedMessages.map(m => m.id));
+                    
+                    const newMessages = await getNewMessages(conversationId, user.id, latestCachedTime, Array.from(cachedMessageIds));
                     if (newMessages && newMessages.length > 0) {
+                        // #region agent log - Track new messages from DB
+                        const newMessageIds = newMessages.map(m => m.id);
+                        const overlappingIds = newMessageIds.filter(id => cachedMessageIds.has(id));
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1408', message: 'loadMessages getNewMessages result', data: { conversationId, cachedCount: finalMergedMessages.length, newMessagesCount: newMessages.length, overlappingIdsCount: overlappingIds.length, overlappingIds: overlappingIds.slice(0, 5), newMessageIds: newMessageIds.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run8', hypothesisId: 'W' }) }).catch(() => { });
+                        // #endregion
+                        
+                        // CRITICAL FIX: Filter out messages đã có trong cache (double check)
+                        const trulyNewMessages = newMessages.filter(msg => !cachedMessageIds.has(msg.id));
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1378', message: 'loadMessages after filter truly new messages', data: { conversationId, newMessagesCount: newMessages.length, trulyNewCount: trulyNewMessages.length, filteredOutCount: newMessages.length - trulyNewMessages.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'W' }) }).catch(() => { });
+                        // #endregion
+                        
+                        if (trulyNewMessages.length === 0) {
+                            // Không có messages mới → bỏ qua
+                            return;
+                        }
+                        
                         // Sanitize và decrypt messages mới tương tự như load từ DB
-                        const sanitizedNew = newMessages.map(msg => {
+                        const sanitizedNew = trulyNewMessages.map(msg => {
                             const { runtime_plain_text, decrypted_on_device_id, ui_optimistic_text, ...cleanMessage } = msg;
                             return {
                                 ...cleanMessage,
@@ -1277,13 +1646,32 @@ const ChatScreen = () => {
                         });
 
                         const decryptedNew = await Promise.all(decryptPromises);
+
+                        // #region agent log
+                        const newMessagesWithPlaintext = decryptedNew.filter(m => m.runtime_plain_text);
+                        const decryptedNewMessageIds = decryptedNew.map(m => m.id);
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1501', message: 'getNewMessages result', data: { conversationId, newMessagesCount: decryptedNew.length, newMessagesWithPlaintextCount: newMessagesWithPlaintext.length, newMessageIds: decryptedNewMessageIds.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'C' }) }).catch(() => { });
+                        // #endregion
+
                         // getNewMessages trả về từ cũ đến mới (đã reverse), nhưng state sort DESC (mới nhất trước)
                         // Reverse lại để có messages mới nhất trước, rồi prepend vào state
                         const reversedNew = [...decryptedNew].reverse();
                         // Merge messages mới vào state (prepend vì là messages mới hơn)
                         // CRITICAL: Preserve runtime_plain_text từ existing messages
                         setMessages(prev => {
-                            // Tạo map để preserve runtime_plain_text từ existing messages
+                            // #region agent log
+                            const prevIds = prev.map(m => m.id);
+                            const reversedNewMessageIds = reversedNew.map(m => m.id);
+                            const overlappingIds = reversedNewMessageIds.filter(id => prevIds.includes(id));
+                            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1295', message: 'merging new messages with prev', data: { conversationId, prevCount: prev.length, newCount: reversedNew.length, overlappingIdsCount: overlappingIds.length, overlappingIds: overlappingIds.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+                            // #endregion
+
+                            // CRITICAL FIX: Filter out messages từ reversedNew nếu đã có trong prev (tránh duplicate)
+                            // Chỉ giữ lại messages thực sự mới (chưa có trong prev)
+                            const prevIdsSet = new Set(prevIds);
+                            const trulyNewMessages = reversedNew.filter(msg => !prevIdsSet.has(msg.id));
+
+                            // Tạo map để preserve runtime_plain_text từ existing messages cho messages mới
                             const existingMap = new Map();
                             prev.forEach(msg => {
                                 if (msg.runtime_plain_text) {
@@ -1291,23 +1679,37 @@ const ChatScreen = () => {
                                 }
                             });
 
-                            // Merge và preserve runtime_plain_text
-                            const merged = [...reversedNew, ...prev].map(msg => {
-                                const existingPlaintext = existingMap.get(msg.id);
-                                if (existingPlaintext && !msg.runtime_plain_text) {
-                                    return {
-                                        ...msg,
-                                        runtime_plain_text: existingPlaintext,
-                                        is_encrypted: false
-                                    };
-                                }
-                                return msg;
-                            });
+                            // Merge: prepend truly new messages vào đầu, giữ nguyên prev (đã có runtime_plain_text nếu có)
+                            // KHÔNG cần merge runtime_plain_text vì đã filter out duplicates
+                            const merged = [...trulyNewMessages, ...prev];
+
+                            // #region agent log
+                            const mergedIds = merged.map(m => m.id);
+                            const duplicateIdsBeforeMergeMessages = mergedIds.filter((id, idx) => mergedIds.indexOf(id) !== idx);
+                            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1315', message: 'before mergeMessages call', data: { conversationId, trulyNewCount: trulyNewMessages.length, prevCount: prev.length, mergedCount: merged.length, duplicateIdsBeforeMergeMessages: duplicateIdsBeforeMergeMessages.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
+                            // #endregion
 
                             const finalMerged = mergeMessages(merged);
+
+                            // #region agent log
+                            const finalMergedIds = finalMerged.map(m => m.id);
+                            const duplicateIdsAfterMergeMessages = finalMergedIds.filter((id, idx) => finalMergedIds.indexOf(id) !== idx);
+                            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1535', message: 'after mergeMessages call', data: { conversationId, finalMergedCount: finalMerged.length, duplicateIdsAfterMergeMessages: duplicateIdsAfterMergeMessages.slice(0, 5), duplicateDetails: duplicateIdsAfterMergeMessages.slice(0, 3).map(id => ({ id, messages: finalMerged.filter(m => m.id === id).map(m => ({ is_sender_copy: m.is_sender_copy, hasRuntimePlainText: !!m.runtime_plain_text, plaintextPreview: m.runtime_plain_text?.substring(0, 30) })) })) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'AB' }) }).catch(() => { });
+                            // #endregion
+
+                            // CRITICAL: Deduplicate trước khi set state
+                            const deduplicatedFinalMerged = deduplicateMessages(finalMerged);
+                            
+                            // #region agent log
+                            const duplicateIdsInDeduplicated = deduplicatedFinalMerged.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+                            if (duplicateIdsInDeduplicated.length > 0 || duplicateIdsAfterMergeMessages.length > 0) {
+                                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1545', message: 'getNewMessages deduplicate result', data: { conversationId, finalMergedCount: finalMerged.length, deduplicatedCount: deduplicatedFinalMerged.length, duplicateIdsAfterMergeMessages: duplicateIdsAfterMergeMessages.slice(0, 5), duplicateIdsInDeduplicated: duplicateIdsInDeduplicated.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'AB' }) }).catch(() => { });
+                            }
+                            // #endregion
+
                             // CRITICAL: Sync messagesRef ngay lập tức
-                            messagesRef.current = finalMerged;
-                            return finalMerged;
+                            messagesRef.current = deduplicatedFinalMerged;
+                            return deduplicatedFinalMerged;
                         });
                     }
                 }
@@ -1327,6 +1729,11 @@ const ChatScreen = () => {
                 // FIX E2EE BUG GIAI ĐOẠN 2: Clear TOÀN BỘ runtime decrypted state khi load từ DB
                 // Message từ DB phải được treat như CHƯA TỪNG DECRYPT
                 const sanitizedMessages = res.data.map(msg => {
+                    // #region agent log
+                    if (msg.sender_id !== user.id && msg.message_type === 'text') {
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1726', message: 'loadMessages from DB - other user message', data: { messageId: msg.id, senderId: msg.sender_id, senderDeviceId: msg.sender_device_id, isEncrypted: msg.is_encrypted, hasContent: !!msg.content, contentPreview: msg.content?.substring(0, 30), isSenderCopy: msg.is_sender_copy }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+                    }
+                    // #endregion
                     // Clear runtime state cho TẤT CẢ messages
                     const { runtime_plain_text, decrypted_on_device_id, ui_optimistic_text, ...cleanMessage } = msg;
                     return {
@@ -1405,7 +1812,10 @@ const ChatScreen = () => {
                 const decryptedMessages = await Promise.all(decryptPromises);
 
                 // Vì đã clear messages state trước khi load, không cần merge với prev
-                setMessages(mergeMessages(decryptedMessages));
+                const mergedFromDb = mergeMessages(decryptedMessages);
+                // CRITICAL: Sync messagesRef ngay lập tức
+                messagesRef.current = mergedFromDb;
+                setMessages(mergedFromDb);
 
                 // === METRICS: Track network data ===
                 const estimatedSize = res.data.length * 500;
@@ -1509,6 +1919,11 @@ const ChatScreen = () => {
     // Decrypt lại tất cả messages hiện tại khi ConversationKey trở nên available
     // ConversationKey có thể có trong cache (device hiện tại) hoặc cần PIN unlock (device khác)
     const decryptAllMessages = async () => {
+        // #region agent log - Track decryptAllMessages call
+        const callStack = new Error().stack;
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1590', message: 'decryptAllMessages called', data: { conversationId, messagesRefLength: messagesRef.current.length, pinUnlocked, callStack: callStack?.split('\n').slice(0, 5).join(' | ') }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'M' }) }).catch(() => { });
+        // #endregion
+
         if (!conversationId) {
             console.log('[DECRYPT_ALL_MESSAGES] No conversationId');
             return;
@@ -1521,12 +1936,38 @@ const ChatScreen = () => {
         const conversationKey = await conversationKeyService.getConversationKey(conversationId);
         if (!conversationKey) {
             console.log(`[DECRYPT_ALL_MESSAGES] Không có ConversationKey cho conversation ${conversationId} (có thể cần PIN unlock)`);
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1602', message: 'decryptAllMessages no conversationKey', data: { conversationId, messagesRefLength: messagesRef.current.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'M' }) }).catch(() => { });
+            // #endregion
             return; // Không có ConversationKey → không thể decrypt
         }
 
         // Lấy messages hiện tại từ ref (đã được sync với state)
         const currentMessages = messagesRef.current;
         console.log(`[DECRYPT_ALL_MESSAGES] Bắt đầu decrypt ${currentMessages.length} messages bằng ConversationKey`);
+
+        // #region agent log - Track messages before decrypt
+        const messagesWithPlaintextBefore = currentMessages.filter(m => m.runtime_plain_text);
+        const messagesEncryptedBefore = currentMessages.filter(m => m.is_encrypted === true);
+        const messagesNeedDecrypt = currentMessages.filter(m => 
+            m.is_encrypted === true && 
+            m.message_type === 'text' && 
+            !m.runtime_plain_text &&
+            m.encryption_version != null &&
+            m.encryption_version >= 3
+        );
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1608', message: 'decryptAllMessages before decrypt', data: { conversationId, totalMessages: currentMessages.length, messagesWithPlaintext: messagesWithPlaintextBefore.length, messagesEncrypted: messagesEncryptedBefore.length, messagesNeedDecrypt: messagesNeedDecrypt.length, sampleMessagesWithPlaintext: messagesWithPlaintextBefore.slice(0, 3).map(m => ({ id: m.id, isEncrypted: m.is_encrypted, hasRuntimePlainText: !!m.runtime_plain_text, plaintextPreview: m.runtime_plain_text?.substring(0, 30) })) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'M' }) }).catch(() => { });
+        // #endregion
+
+        // CRITICAL FIX: Nếu tất cả messages đã có runtime_plain_text → không cần decrypt lại
+        // Tránh decrypt lại khi quay lại conversation (loadMessages đã decrypt rồi)
+        if (messagesNeedDecrypt.length === 0) {
+            console.log(`[DECRYPT_ALL_MESSAGES] Tất cả messages đã được decrypt, bỏ qua`);
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1615', message: 'decryptAllMessages skipped - all messages already decrypted', data: { conversationId, totalMessages: currentMessages.length, messagesWithPlaintext: messagesWithPlaintextBefore.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'M' }) }).catch(() => { });
+            // #endregion
+            return;
+        }
 
         // Decrypt TẤT CẢ encrypted messages (không phân biệt device, sender_copy, etc.)
         let decryptedCount = 0;
@@ -1540,30 +1981,35 @@ const ChatScreen = () => {
                 msg.message_type === 'text' &&
                 msg.encryption_version != null &&
                 msg.encryption_version >= 3) { // CHỈ decrypt v3+ (phải check != null để tránh null/undefined)
-                
+
+                // CRITICAL: Nếu đã có runtime_plain_text hợp lệ (không phải ciphertext) → KHÔNG decrypt lại
+                // Chỉ decrypt khi:
+                // 1. Chưa có runtime_plain_text
+                // 2. HOẶC runtime_plain_text có vẻ là ciphertext (cần decrypt lại)
+                let shouldDecrypt = !msg.runtime_plain_text; // Chưa có → decrypt
+
                 // CRITICAL: Validate runtime_plain_text hiện tại
                 // Nếu runtime_plain_text có vẻ là ciphertext (chứa ký tự nhị phân, quá ngắn với base64 chars) → decrypt lại
-                let shouldDecrypt = !msg.runtime_plain_text; // Chưa có → decrypt
-                
+
                 if (msg.runtime_plain_text) {
                     // Đã có runtime_plain_text → kiểm tra xem có phải ciphertext không
                     const plaintext = msg.runtime_plain_text;
-                    
+
                     // Kiểm tra ký tự nhị phân (non-printable)
                     const binaryCharMatches = plaintext.match(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFD]/g);
                     const hasReplacementChar = plaintext.includes('\uFFFD');
                     const binaryCharCount = binaryCharMatches ? binaryCharMatches.length : 0;
                     const hasBinaryChars = hasReplacementChar || binaryCharCount >= 2;
-                    
+
                     // Kiểm tra base64-like (ngắn + có ký tự đặc biệt)
                     const hasBase64SpecialChars = plaintext.includes('+') || plaintext.includes('/') || plaintext.includes('=');
                     const isShortBase64Like = plaintext.length <= 10 && hasBase64SpecialChars;
-                    
+
                     // CRITICAL: Nếu runtime_plain_text quá ngắn (<= 4 ký tự) VÀ message vẫn encrypted
                     // → có thể là ciphertext chưa được decrypt đúng
                     // Plaintext hợp lệ thường >= 1 ký tự, nhưng nếu quá ngắn và vẫn encrypted → nghi ngờ
                     const isVeryShortAndEncrypted = plaintext.length <= 4 && msg.is_encrypted === true;
-                    
+
                     // Nếu có dấu hiệu là ciphertext → decrypt lại
                     if (hasBinaryChars || isShortBase64Like || isVeryShortAndEncrypted) {
                         if (__DEV__) {
@@ -1579,7 +2025,7 @@ const ChatScreen = () => {
                         shouldDecrypt = true;
                     }
                 }
-                
+
                 if (!shouldDecrypt) {
                     // Đã có runtime_plain_text hợp lệ → giữ nguyên
                     return msg;
@@ -1601,6 +2047,9 @@ const ChatScreen = () => {
                             decryption_error: false
                         };
                         console.log(`[DECRYPT_ALL_MESSAGES] ✓ Decrypted message ${msg.id}, has runtime_plain_text: ${!!decryptedMsg.runtime_plain_text}`);
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1679', message: 'decryptAllMessages decrypted message', data: { messageId: msg.id, wasEncrypted: msg.is_encrypted === true, encryptionVersion: msg.encryption_version, hadRuntimePlainText: !!msg.runtime_plain_text, decryptedContentLength: decryptedContent.length, decryptedContentPreview: decryptedContent.substring(0, 50) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'M' }) }).catch(() => { });
+                        // #endregion
                         return decryptedMsg;
                     } else {
                         skippedCount++;
@@ -1657,6 +2106,12 @@ const ChatScreen = () => {
         // QUAN TRỌNG: Tạo array mới (immutable) để React detect state change
         const decryptedMessages = await Promise.all(decryptPromises);
 
+        // #region agent log
+        const decryptedIds = decryptedMessages.map(m => m.id);
+        const duplicateIdsInDecrypted = decryptedIds.filter((id, idx) => decryptedIds.indexOf(id) !== idx);
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1567', message: 'decryptAllMessages result', data: { conversationId, decryptedCount, skippedCount, errorCount, legacyMessageCount, decryptedMessagesCount: decryptedMessages.length, duplicateIdsInDecrypted: duplicateIdsInDecrypted.slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
+        // #endregion
+
         // Log summary
         if (legacyMessageCount > 0) {
             console.log(`[DECRYPT_ALL_MESSAGES] Summary: ${decryptedCount} decrypted, ${skippedCount} skipped, ${errorCount} errors, ${legacyMessageCount} legacy messages (v1/v2/null) skipped`);
@@ -1678,19 +2133,92 @@ const ChatScreen = () => {
         }
 
         // QUAN TRỌNG: setState với array mới (immutable) để trigger re-render
-        // CRITICAL: Sync messagesRef ngay lập tức để tránh desync
-        const finalMessages = [...decryptedMessages];
-        messagesRef.current = finalMessages;
-        setMessages(finalMessages);
+        // CRITICAL: Gọi mergeMessages để đảm bảo không có duplicate (sender_copy/receiver)
+        // và đảm bảo logic filter đúng
+        const mergedFinalMessages = mergeMessages(decryptedMessages);
+
+        // #region agent log
+        const duplicateCheck = new Set(mergedFinalMessages.map(m => m.id));
+        const duplicateIdsInMergedFinal = mergedFinalMessages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1916', message: 'decryptAllMessages after mergeMessages', data: { conversationId, decryptedMessagesCount: decryptedMessages.length, mergedFinalMessagesCount: mergedFinalMessages.length, duplicateIdsInMergedFinal: duplicateIdsInMergedFinal.slice(0, 5), hasDuplicatesInMergedFinal: duplicateIdsInMergedFinal.length > 0, uniqueCount: duplicateCheck.size }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'X' }) }).catch(() => { });
+        // #endregion
+        const hasDuplicates = duplicateCheck.size !== mergedFinalMessages.length;
+        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1740', message: 'decryptAllMessages before setState', data: { conversationId, decryptedMessagesCount: decryptedMessages.length, mergedFinalMessagesCount: mergedFinalMessages.length, hasDuplicates, uniqueCount: duplicateCheck.size, duplicateIds: mergedFinalMessages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx).slice(0, 5) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'H' }) }).catch(() => { });
+        // #endregion
+
+        // CRITICAL FIX: Merge với messages hiện tại trong state (có thể có messages mới từ realtime)
+        // Không replace toàn bộ state vì có thể mất messages mới từ realtime
+        setMessages(prev => {
+            // #region agent log
+            const prevIds = prev.map(m => m.id);
+            const prevIdsSet = new Set(prevIds);
+            const duplicateIdsInPrev = prevIds.filter((id, idx, arr) => arr.indexOf(id) !== idx);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1927', message: 'decryptAllMessages before merge with prev', data: { conversationId, prevCount: prev.length, mergedFinalMessagesCount: mergedFinalMessages.length, duplicateIdsInPrev: duplicateIdsInPrev.slice(0, 5), hasDuplicatesInPrev: duplicateIdsInPrev.length > 0 }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'Y' }) }).catch(() => { });
+            // #endregion
+
+            // Tạo map để preserve runtime_plain_text từ mergedFinalMessages
+            const decryptedMap = new Map();
+            mergedFinalMessages.forEach(msg => {
+                if (msg.runtime_plain_text && msg.id) {
+                    decryptedMap.set(msg.id, msg.runtime_plain_text);
+                }
+            });
+
+            // Merge: update messages trong prev với runtime_plain_text từ mergedFinalMessages
+            const merged = prev.map(msg => {
+                const decryptedPlaintext = decryptedMap.get(msg.id);
+                if (decryptedPlaintext) {
+                    return {
+                        ...msg,
+                        runtime_plain_text: decryptedPlaintext,
+                        is_encrypted: false,
+                        decryption_error: false
+                    };
+                }
+                return msg;
+            });
+
+            // Thêm messages mới từ mergedFinalMessages nếu chưa có trong prev
+            const newMessages = mergedFinalMessages.filter(msg => msg.id && !prevIdsSet.has(msg.id));
+            const finalMerged = [...newMessages, ...merged];
+
+            // #region agent log
+            const duplicateIdsBeforeDedup = finalMerged.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1952', message: 'decryptAllMessages before deduplicate', data: { conversationId, finalMergedCount: finalMerged.length, newMessagesCount: newMessages.length, duplicateIdsBeforeDedup: duplicateIdsBeforeDedup.slice(0, 5), hasDuplicatesBeforeDedup: duplicateIdsBeforeDedup.length > 0 }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'Y' }) }).catch(() => { });
+            // #endregion
+
+            // CRITICAL: Deduplicate để đảm bảo không có duplicate
+            const finalMap = new Map();
+            finalMerged.forEach(msg => {
+                if (!msg.id) return;
+                const existing = finalMap.get(msg.id);
+                if (!existing || (msg.runtime_plain_text && !existing.runtime_plain_text)) {
+                    finalMap.set(msg.id, msg);
+                }
+            });
+            const finalDeduplicatedMessages = Array.from(finalMap.values());
+            
+            // #region agent log
+            const duplicateIdsAfterDedup = finalDeduplicatedMessages.map(m => m.id).filter((id, idx, arr) => arr.indexOf(id) !== idx);
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1970', message: 'decryptAllMessages after deduplicate', data: { conversationId, finalDeduplicatedMessagesCount: finalDeduplicatedMessages.length, duplicateIdsAfterDedup: duplicateIdsAfterDedup.slice(0, 5), hasDuplicatesAfterDedup: duplicateIdsAfterDedup.length > 0 }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run7', hypothesisId: 'Y' }) }).catch(() => { });
+            // #endregion
+            
+            // CRITICAL: Sync messagesRef ngay lập tức
+            messagesRef.current = finalDeduplicatedMessages;
+            return finalDeduplicatedMessages;
+        });
 
         // DEV: Log để verify sync
         if (__DEV__) {
-            const runtimePlaintextCount = finalMessages.filter(m => m.runtime_plain_text).length;
+            const runtimePlaintextCount = mergedFinalMessages.filter(m => m.runtime_plain_text).length;
+            const duplicateCheck = new Set(mergedFinalMessages.map(m => m.id));
             console.log('[DECRYPT_ALL_MESSAGES_STATE_SYNC]', {
-                stateCount: finalMessages.length,
+                stateCount: mergedFinalMessages.length,
                 refCount: messagesRef.current.length,
                 runtimePlaintextCount: runtimePlaintextCount,
-                refMatchesState: messagesRef.current.length === finalMessages.length
+                refMatchesState: messagesRef.current.length === mergedFinalMessages.length,
+                hasDuplicates: duplicateCheck.size !== mergedFinalMessages.length,
+                uniqueCount: duplicateCheck.size
             });
         }
     };
@@ -1749,7 +2277,7 @@ const ChatScreen = () => {
         };
 
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1710',message:'sendMessageHandler optimistic message created',data:{tempMessageId,plainText,hasUiOptimisticText:!!optimisticMessage.ui_optimistic_text,uiOptimisticTextLength:optimisticMessage.ui_optimistic_text?.length,content:optimisticMessage.content,isEncrypted:optimisticMessage.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1710', message: 'sendMessageHandler optimistic message created', data: { tempMessageId, plainText, hasUiOptimisticText: !!optimisticMessage.ui_optimistic_text, uiOptimisticTextLength: optimisticMessage.ui_optimistic_text?.length, content: optimisticMessage.content, isEncrypted: optimisticMessage.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
         // #endregion
 
         // Thêm optimistic message vào state ngay để hiển thị
@@ -1758,7 +2286,7 @@ const ChatScreen = () => {
             const newMessages = mergeMessages([optimisticMessage, ...prev]);
             // #region agent log
             const mergedOptimistic = newMessages.find(m => m.id === tempMessageId);
-            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:1737',message:'after mergeMessages optimistic',data:{tempMessageId,foundInMerged:!!mergedOptimistic,hasUiOptimisticText:!!mergedOptimistic?.ui_optimistic_text,uiOptimisticTextLength:mergedOptimistic?.ui_optimistic_text?.length,hasContent:!!mergedOptimistic?.content,contentLength:mergedOptimistic?.content?.length,isEncrypted:mergedOptimistic?.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:1737', message: 'after mergeMessages optimistic', data: { tempMessageId, foundInMerged: !!mergedOptimistic, hasUiOptimisticText: !!mergedOptimistic?.ui_optimistic_text, uiOptimisticTextLength: mergedOptimistic?.ui_optimistic_text?.length, hasContent: !!mergedOptimistic?.content, contentLength: mergedOptimistic?.content?.length, isEncrypted: mergedOptimistic?.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
             // #endregion
             // CRITICAL: Sync messagesRef ngay lập tức
             messagesRef.current = newMessages;
@@ -2162,39 +2690,23 @@ const ChatScreen = () => {
         const isOwn = message.sender_id === user.id;
         const isGroup = conversation?.type === 'group';
 
-        // FIX E2EE BUG GIAI ĐOẠN 2: Check UI state theo thứ tự bắt buộc
-        // 1. ui_optimistic_text (self message vừa gửi)
-        // 2. runtime_plain_text (đã decrypt)
-        // 3. is_encrypted (hiển thị "Đã mã hóa đầu cuối")
-        // 4. content (plaintext message)
-        const deviceService = require('../../services/deviceService').default;
-        const currentDeviceId = currentDeviceIdRef.current;
-
-        // FIX: Degrade gracefully khi currentDeviceId === null
-        // Self message detection: Khi deviceId null, fallback detect bằng ui_optimistic_text hoặc sender_id
-        // Lý do: Self message KHÔNG BAO GIỜ được render trắng, cần detect được ngay cả khi chưa có deviceId
-        let isSelfMessage = false;
-        if (currentDeviceId !== null && currentDeviceId !== undefined) {
-            // Có deviceId → check strict (sender_device_id === currentDeviceId)
-            isSelfMessage = message.sender_device_id === currentDeviceId;
-        } else {
-            // Không có deviceId → fallback detect self message bằng:
-            // 1. ui_optimistic_text tồn tại (self message vừa gửi)
-            // 2. HOẶC sender_id === currentUser.id (tin nhắn từ user hiện tại)
-            const hasUiOptimisticTextFallback = message.ui_optimistic_text &&
-                typeof message.ui_optimistic_text === 'string' &&
-                message.ui_optimistic_text.trim() !== '';
-            const isFromCurrentUser = message.sender_id === user.id;
-            isSelfMessage = hasUiOptimisticTextFallback || isFromCurrentUser;
+        // LOGIC ĐƠN GIẢN: Chỉ dùng sender_id để xác định self message (cho UI styling)
+        // KHÔNG dùng device_id trong render logic
+        const isSelfMessage = message.sender_id === user.id;
+        
+        // #region agent log
+        if (!isSelfMessage && message.message_type === 'text') {
+            fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2682', message: 'renderMessage entry - other user text message', data: { messageId: message.id, senderId: message.sender_id, userId: user.id, senderDeviceId: message.sender_device_id, currentDeviceId: currentDeviceIdRef.current, pinUnlocked }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
         }
+        // #endregion
 
         const hasUiOptimisticText = message.ui_optimistic_text &&
             typeof message.ui_optimistic_text === 'string' &&
             message.ui_optimistic_text.trim() !== '';
-        
+
         // #region agent log
         if (message.id?.startsWith('temp-') || (message.is_sender_copy && !message.runtime_plain_text)) {
-            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2191',message:'renderMessage hasUiOptimisticText check',data:{messageId:message.id,uiOptimisticText:message.ui_optimistic_text,uiOptimisticTextType:typeof message.ui_optimistic_text,hasUiOptimisticText,isTemp:message.id?.startsWith('temp-'),isSenderCopy:message.is_sender_copy,hasRuntimePlainText:!!message.runtime_plain_text},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2191', message: 'renderMessage hasUiOptimisticText check', data: { messageId: message.id, uiOptimisticText: message.ui_optimistic_text, uiOptimisticTextType: typeof message.ui_optimistic_text, hasUiOptimisticText, isTemp: message.id?.startsWith('temp-'), isSenderCopy: message.is_sender_copy, hasRuntimePlainText: !!message.runtime_plain_text }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
         }
         // #endregion
 
@@ -2366,182 +2878,138 @@ const ChatScreen = () => {
                             // CRITICAL FIX: KHÔNG return placeholder View riêng biệt ở đây
                             // Placeholder sẽ được render BÊN TRONG message bubble thông qua checkDisplayText logic
 
-                            // Check xem có phải "Đã mã hóa đầu cuối" không - nếu có thì render riêng, không có messageBubble
-                            let checkDisplayText = null;
+                            // CSS FIX: Tính safeDisplayText và isEncryptedPlaceholder TRƯỚC KHI render View
+                            // Để đảm bảo cả bubble style và text style đều dùng cùng giá trị
+                            let safeDisplayText = null;
+                            let isEncryptedPlaceholder = false;
+                            
                             if (message.message_type === 'text') {
+                                // LOGIC: Tin nhắn mình gửi LUÔN hiển thị, tin nhắn người khác phụ thuộc PIN
+                                
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2886', message: 'renderMessage text - before branch', data: { messageId: message.id, messageType: message.message_type, isSelfMessage, senderId: message.sender_id, userId: user.id, pinUnlocked, hasRuntimePlainText, hasUiOptimisticText, isEncrypted: message.is_encrypted, hasContent: !!message.content, senderDeviceId: message.sender_device_id, currentDeviceId: currentDeviceIdRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'G' }) }).catch(() => { });
+                                // #endregion
+                                
                                 if (isSelfMessage) {
-                                    // Self message: check ui_optimistic_text, runtime_plain_text, content
-                                    if (!hasUiOptimisticText && !hasRuntimePlainText) {
-                                        const canRender = canRenderPlaintext(message, currentDeviceId);
-                                        if (!canRender || !message.content || typeof message.content !== 'string' || message.content.trim() === '') {
-                                            checkDisplayText = 'Đã mã hóa đầu cuối';
-                                        }
+                                    // Tin nhắn mình gửi: LUÔN hiển thị, KHÔNG BAO GIỜ hiện "🔒 Đã mã hoá đầu cuối"
+                                    if (hasRuntimePlainText && message.runtime_plain_text && typeof message.runtime_plain_text === 'string' && message.runtime_plain_text.trim() !== '') {
+                                        safeDisplayText = message.runtime_plain_text;
+                                        isEncryptedPlaceholder = false;
+                                    } else if (hasUiOptimisticText && message.ui_optimistic_text && typeof message.ui_optimistic_text === 'string' && message.ui_optimistic_text.trim() !== '') {
+                                        safeDisplayText = message.ui_optimistic_text;
+                                        isEncryptedPlaceholder = false;
+                                    } else if (message.is_encrypted === false && message.content && typeof message.content === 'string' && message.content.trim() !== '') {
+                                        safeDisplayText = message.content;
+                                        isEncryptedPlaceholder = false;
+                                    } else {
+                                        safeDisplayText = '...';
+                                        isEncryptedPlaceholder = false;
+                                        
+                                        // #region agent log
+                                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2900', message: 'renderMessage self message - showing dots', data: { messageId: message.id, isSelfMessage, safeDisplayText, isEncryptedPlaceholder }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run2', hypothesisId: 'H' }) }).catch(() => { });
+                                        // #endregion
                                     }
                                 } else {
-                                    // Non-self message
-                                    checkDisplayText = getSafeDisplayText(message, currentDeviceId);
+                                    // Tin nhắn từ người khác
+                                    const currentDeviceId = currentDeviceIdRef.current;
+                                    
+                                    // LOGIC ĐƠN GIẢN: Kiểm tra device từ database
+                                    // Nếu sender_device_id khác currentDeviceId → hiển thị "🔒 Đã mã hoá đầu cuối"
+                                    // CRITICAL: Nếu không có currentDeviceId hoặc sender_device_id, coi như từ thiết bị khác (an toàn hơn)
+                                    const isFromOtherDevice = !currentDeviceId || 
+                                                               !message.sender_device_id || 
+                                                               message.sender_device_id !== currentDeviceId;
+                                    
+                                    // DEBUG: Console log để kiểm tra
+                                    console.log('[DEVICE_CHECK]', {
+                                        messageId: message.id,
+                                        senderId: message.sender_id,
+                                        userId: user.id,
+                                        currentDeviceId,
+                                        senderDeviceId: message.sender_device_id,
+                                        isFromOtherDevice,
+                                        pinUnlocked,
+                                        isSenderCopy: message.is_sender_copy
+                                    });
+                                    
+                                    if (!pinUnlocked && isFromOtherDevice) {
+                                        // Chưa nhập PIN và tin nhắn từ thiết bị khác → LUÔN hiển thị "🔒 Đã mã hoá đầu cuối"
+                                        safeDisplayText = '🔒 Đã mã hoá đầu cuối';
+                                        isEncryptedPlaceholder = true;
+                                        console.log('[DEVICE_CHECK] Showing placeholder for message:', message.id);
+                                    } else {
+                                        // Đã nhập PIN hoặc tin nhắn từ thiết bị hiện tại → hiển thị theo thứ tự ưu tiên
+                                        if (hasRuntimePlainText && message.runtime_plain_text && typeof message.runtime_plain_text === 'string' && message.runtime_plain_text.trim() !== '') {
+                                            safeDisplayText = message.runtime_plain_text;
+                                            isEncryptedPlaceholder = false;
+                                        } else if (hasUiOptimisticText && message.ui_optimistic_text && typeof message.ui_optimistic_text === 'string' && message.ui_optimistic_text.trim() !== '') {
+                                            safeDisplayText = message.ui_optimistic_text;
+                                            isEncryptedPlaceholder = false;
+                                        } else if (message.is_encrypted === true) {
+                                            safeDisplayText = '🔒 Đã mã hoá đầu cuối';
+                                            isEncryptedPlaceholder = true;
+                                        } else if (message.content && typeof message.content === 'string' && message.content.trim() !== '') {
+                                            safeDisplayText = message.content;
+                                            isEncryptedPlaceholder = false;
+                                        } else {
+                                            safeDisplayText = '🔒 Đã mã hoá đầu cuối';
+                                            isEncryptedPlaceholder = true;
+                                        }
+                                    }
                                 }
                             }
 
-                            // Nếu checkDisplayText là "Đã mã hóa đầu cuối" NHƯNG đã có runtime_plain_text → bỏ qua placeholder
-                            if (checkDisplayText === 'Đã mã hóa đầu cuối' && message.runtime_plain_text) {
-                                // Đã có runtime_plain_text → không render placeholder, tiếp tục render bubble
-                                checkDisplayText = null;
+                            // CRITICAL FIX: Đảm bảo safeDisplayText luôn có giá trị hợp lệ cho text messages
+                            if (message.message_type === 'text' && (!safeDisplayText || typeof safeDisplayText !== 'string' || safeDisplayText.trim() === '')) {
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2803', message: 'renderMessage safeDisplayText is null/empty after calculation', data: { messageId: message.id, safeDisplayText, safeDisplayTextType: typeof safeDisplayText, isSelfMessage, hasRuntimePlainText: !!message.runtime_plain_text, hasUiOptimisticText: !!message.ui_optimistic_text, hasContent: !!message.content, contentPreview: message.content?.substring(0, 50), isEncrypted: message.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run10', hypothesisId: 'BUBBLE1' }) }).catch(() => { });
+                                // #endregion
+                                safeDisplayText = 'Đã mã hóa đầu cuối';
+                                isEncryptedPlaceholder = true;
                             }
-
-                            // CRITICAL FIX: KHÔNG return placeholder View riêng biệt ở đây
-                            // Placeholder sẽ được render BÊN TRONG message bubble thông qua checkDisplayText
-                            // Nếu checkDisplayText === 'Đã mã hóa đầu cuối', nó sẽ được render như text bình thường trong bubble
-
+                            
                             // CRITICAL FIX: Kiểm tra self message không có text → không render cả message bubble
-                            if (isSelfMessage && message.message_type === 'text') {
-                                if (!hasUiOptimisticText && !hasRuntimePlainText) {
-                                    const canRender = canRenderPlaintext(message, currentDeviceId);
-                                    if (!canRender || !message.content || typeof message.content !== 'string' || message.content.trim() === '') {
-                                        // Self message không có text → không render cả message bubble
-                                        return null;
-                                    }
+                            // CHỈ return null khi safeDisplayText vẫn là placeholder và không có gì để hiển thị
+                            if (isSelfMessage && message.message_type === 'text' && safeDisplayText === 'Đã mã hóa đầu cuối' && !hasUiOptimisticText && !hasRuntimePlainText) {
+                                const canRender = canRenderPlaintext(message, currentDeviceId);
+                                if (!canRender || !message.content || typeof message.content !== 'string' || message.content.trim() === '') {
+                                    // Self message không có text → không render cả message bubble
+                                    // #region agent log
+                                    fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2815', message: 'renderMessage returning null (self message no text)', data: { messageId: message.id, safeDisplayText, isSelfMessage, hasRuntimePlainText: !!message.runtime_plain_text, hasUiOptimisticText: !!message.ui_optimistic_text, hasContent: !!message.content, isEncrypted: message.is_encrypted }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run10', hypothesisId: 'BUBBLE1' }) }).catch(() => { });
+                                    // #endregion
+                                    return null;
                                 }
                             }
 
                             return (
                                 <View style={[
                                     styles.messageBubble,
-                                    // Optimistic message (có ui_optimistic_text) → LUÔN dùng bubble bình thường, KHÔNG BAO GIỜ dùng encryptedBubbleOwn
-                                    isOwn ? styles.ownBubble : styles.otherBubble
+                                    // CSS FIX: Dùng isEncryptedPlaceholder đã tính trước để set bubble style
+                                    isEncryptedPlaceholder && !hasUiOptimisticText
+                                        ? (isOwn ? styles.encryptedBubbleOwn : styles.encryptedBubbleOther)
+                                        : (isOwn ? styles.ownBubble : styles.otherBubble)
                                 ]}>
                                     {message.message_type === 'text' ? (() => {
                                         // Optimistic message → LUÔN dùng text style bình thường (màu trắng cho own, màu đen cho other)
-                                        const textColorStyle = isOwn ? styles.ownText : styles.otherText;
-
-                                        // FIX CRITICAL UI BUG: Tách riêng logic self message
-                                        // Self message KHÔNG BAO GIỜ được trống
-                                        if (isSelfMessage) {
-                                            // Ưu tiên: ui_optimistic_text
-                                            // #region agent log
-                                            if (message.id?.startsWith('temp-')) {
-                                                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2406',message:'renderMessage self message',data:{messageId:message.id,hasUiOptimisticText,uiOptimisticText:message.ui_optimistic_text?.substring(0,20),hasRuntimePlainText,runtimePlainText:message.runtime_plain_text?.substring(0,20),hasContent:!!message.content,contentLength:message.content?.length,contentPreview:message.content?.substring(0,20),isEncrypted:message.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                            }
-                                            // #endregion
-                                            if (hasUiOptimisticText) {
-                                                // #region agent log
-                                                if (message.id?.startsWith('temp-')) {
-                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2418',message:'renderMessage rendering ui_optimistic_text',data:{messageId:message.id,renderedText:message.ui_optimistic_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                                }
-                                                // #endregion
-                                                return (
-                                                    <Text style={[
-                                                        styles.messageText,
-                                                        textColorStyle
-                                                    ]}>
-                                                        {message.ui_optimistic_text}
-                                                    </Text>
-                                                );
-                                            }
-
-                                            // Thứ hai: runtime_plain_text (đã decrypt)
-                                            if (hasRuntimePlainText) {
-                                                // #region agent log
-                                                if (message.id?.startsWith('temp-')) {
-                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2430',message:'renderMessage rendering runtime_plain_text',data:{messageId:message.id,renderedText:message.runtime_plain_text?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                                }
-                                                // #endregion
-                                                return (
-                                                    <Text style={[
-                                                        styles.messageText,
-                                                        textColorStyle
-                                                    ]}>
-                                                        {message.runtime_plain_text}
-                                                    </Text>
-                                                );
-                                            }
-
-                                            // Fallback: Self message luôn có text
-                                            // Nếu chưa decrypt được → hiển thị "Đang gửi..." hoặc "Đã mã hóa đầu cuối"
-                                            const canRender = canRenderPlaintext(message, currentDeviceId);
-
-                                            // #region agent log
-                                            if (message.id?.startsWith('temp-')) {
-                                                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2443',message:'renderMessage fallback check',data:{messageId:message.id,canRender,hasContent:!!message.content,contentLength:message.content?.length,contentPreview:message.content?.substring(0,20),isEncrypted:message.is_encrypted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                            }
-                                            // #endregion
-
-                                            // CRITICAL: TUYỆT ĐỐI không render content nếu message đã encrypted
-                                            // Chỉ render content khi message KHÔNG encrypted (plaintext message)
-                                            if (canRender && 
-                                                message.is_encrypted !== true &&
-                                                message.content &&
-                                                typeof message.content === 'string' &&
-                                                message.content.trim() !== '') {
-                                                // #region agent log
-                                                if (message.id?.startsWith('temp-')) {
-                                                    fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2479',message:'renderMessage rendering content (plaintext)',data:{messageId:message.id,renderedText:message.content?.substring(0,20),isEncrypted:message.is_encrypted,contentLength:message.content?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                                }
-                                                // #endregion
-                                                return (
-                                                    <Text style={[
-                                                        styles.messageText,
-                                                        textColorStyle
-                                                    ]}>
-                                                        {message.content}
-                                                    </Text>
-                                                );
-                                            }
-
-                                            // Self message chưa có text → return null để không render text
-                                            // CRITICAL: Self message đang gửi (có ui_optimistic_text) đã được xử lý ở trên
-                                            // Nếu đến đây nghĩa là không có ui_optimistic_text, runtime_plain_text, hoặc content
-                                            // → Return null để không render text (message bubble sẽ không có text nhưng vẫn có thời gian)
-                                            // #region agent log
-                                            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'chat.jsx:2503',message:'renderMessage returning null (no text for self message)',data:{messageId:message.id,isTemp:message.id?.startsWith('temp-'),hasUiOptimisticText,hasRuntimePlainText,hasContent:!!message.content,contentLength:message.content?.length,isEncrypted:message.is_encrypted,canRender},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                                            // #endregion
-                                            return null;
+                                        // LOGIC ĐƠN GIẢN: safeDisplayText đã được tính ở trên dựa trên pinUnlocked
+                                        // Không cần xử lý riêng cho self/non-self message
+                                        // Đảm bảo safeDisplayText luôn có giá trị hợp lệ
+                                        if (!safeDisplayText || typeof safeDisplayText !== 'string' || safeDisplayText.trim() === '') {
+                                            safeDisplayText = '🔒 Đã mã hoá đầu cuối';
+                                            isEncryptedPlaceholder = true;
                                         }
-
-                                        // Non-self message: Sử dụng checkDisplayText đã được tính toán ở trên
-                                        // checkDisplayText có thể là: plaintext, "Đã mã hóa đầu cuối", hoặc null
-                                        const displayText = checkDisplayText || getSafeDisplayText(message, currentDeviceId);
-
-                                        // FIX CRITICAL UI BUG: Guard render - không render undefined/null/empty
-                                        // CRITICAL: Đảm bảo displayText luôn là string hợp lệ trước khi render
-                                        if (!displayText || typeof displayText !== 'string') {
-                                            // ASSERT để bắt bug
-                                            if (__DEV__) {
-                                                console.error('[UI BUG] Invalid displayText', {
-                                                    messageId: message.id,
-                                                    isSelfMessage,
-                                                    hasUiOptimisticText,
-                                                    hasRuntimePlainText,
-                                                    content: message.content?.substring(0, 50),
-                                                    is_encrypted: message.is_encrypted,
-                                                    sender_device_id: message.sender_device_id,
-                                                    currentDeviceId,
-                                                    checkDisplayText,
-                                                    displayText,
-                                                    displayTextType: typeof displayText
-                                                });
-                                            }
-
-                                            // Fallback: luôn có text
-                                            return (
-                                                <Text style={[
-                                                    styles.messageText,
-                                                    isOwn ? styles.ownText : styles.otherText
-                                                ]}>
-                                                    Đã mã hóa đầu cuối
-                                                </Text>
-                                            );
-                                        }
-
-                                        // CRITICAL: Đảm bảo displayText là string hợp lệ (không rỗng)
-                                        const safeDisplayText = displayText.trim() === '' ? 'Đã mã hóa đầu cuối' : displayText;
-
-                                        // Display text hợp lệ (có thể là plaintext hoặc "Đã mã hóa đầu cuối")
-                                        // CRITICAL: Render như text bình thường trong bubble, KHÔNG render placeholder View riêng biệt
+                                        
+                                        // #region agent log - Track final render
+                                        fetch('http://127.0.0.1:7242/ingest/e8f8c902-036e-4310-861c-abe174d99074', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'chat.jsx:2945', message: 'renderMessage final render', data: { messageId: message.id, senderId: message.sender_id, currentUserId: user.id, isSenderCopy: message.is_sender_copy, safeDisplayText: safeDisplayText?.substring(0, 100), safeDisplayTextLength: safeDisplayText?.length, isEncryptedPlaceholder, isOwn, isSelfMessage, hasRuntimePlainText: !!message.runtime_plain_text, runtimePlainTextPreview: message.runtime_plain_text?.substring(0, 50), isEncrypted: message.is_encrypted, encryptionVersion: message.encryption_version, hasUiOptimisticText }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run15', hypothesisId: 'OTHER1' }) }).catch(() => { });
+                                        // #endregion
+                                        
+                                        // CRITICAL: Chỉ render MỘT Text element với safeDisplayText
                                         return (
                                             <Text style={[
                                                 styles.messageText,
-                                                isOwn ? styles.ownText : styles.otherText
+                                                isEncryptedPlaceholder
+                                                    ? (isOwn ? styles.encryptedTextOwn : styles.encryptedTextOther) // Encrypted: màu xám, italic
+                                                    : (isOwn ? styles.ownText : styles.otherText) // Plaintext: màu trắng cho own, text theme cho other
                                             ]}>
                                                 {safeDisplayText}
                                             </Text>
@@ -3048,7 +3516,12 @@ const styles = StyleSheet.create({
         color: theme.colors.text,
     },
     encryptedTextOwn: {
-        color: theme.colors.text, // Màu đen/theme text cho encrypted bubble (nền trắng)
+        color: theme.colors.textSecondary || '#888', // Màu xám cho encrypted placeholder (nền trắng)
+        fontStyle: 'italic',
+    },
+    encryptedTextOther: {
+        color: theme.colors.textSecondary || '#888', // Màu xám cho encrypted placeholder
+        fontStyle: 'italic',
     },
     imageContainer: {
         position: 'relative',
