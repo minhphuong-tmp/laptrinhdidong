@@ -1,4 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
+import encryptionService from './encryptionService';
+import pinService from './pinService';
 
 const CONVERSATION_KEY_PREFIX = 'conversation_key_';
 const CONVERSATION_KEY_ENCRYPTED_PREFIX = 'conversation_key_encrypted_';
@@ -6,78 +8,118 @@ const CONVERSATION_KEY_ENCRYPTED_PREFIX = 'conversation_key_encrypted_';
 /**
  * ConversationKeyService - Quản lý ConversationKey cho mỗi conversation
  * 
- * INVARIANT:
- * - ConversationKey (plaintext) CHỈ tồn tại trong memory (RAM)
- * - ConversationKey (plaintext) CHỈ được decrypt SAU KHI user nhập PIN
- * - ConversationKey KHÔNG BAO GIỜ được lưu vào SecureStore/AsyncStorage (plaintext)
- * - Reload app → ConversationKey mất → phải nhập PIN lại
+ * Mỗi conversation có 1 ConversationKey (AES-256)
+ * ConversationKey được mã hóa bằng PIN của user và lưu local
  */
 class ConversationKeyService {
-    // Cache ConversationKey (plaintext) trong memory sau khi decrypt (Map<conversationId, Uint8Array>)
-    // INVARIANT: Chỉ cache sau khi decrypt từ SecureStore (sau khi PIN unlock)
+    // Cache ConversationKey trong memory sau khi decrypt (Map<conversationId, Uint8Array>)
     constructor() {
         this.keyCache = new Map();
     }
 
     /**
-     * @deprecated KHÔNG SỬ DỤNG: ConversationKey chỉ lưu trong RAM, không lưu vào SecureStore
-     * Lưu EncryptedConversationKey từ backend vào SecureStore
-     * INVARIANT: KHÔNG decrypt ngay, chỉ lưu encrypted key
-     * @param {string} conversationId 
-     * @param {string} encryptedConversationKey - Encrypted key từ backend (base64 string)
+     * Generate ConversationKey mới cho conversation
+     * @returns {Promise<Uint8Array>} ConversationKey (32 bytes AES-256)
      */
-    async saveEncryptedConversationKey(conversationId, encryptedConversationKey) {
+    async generateConversationKey() {
+        return await encryptionService.generateAESKey();
+    }
+
+    /**
+     * Lưu ConversationKey vào cache và (nếu có PIN) vào SecureStore
+     * @param {string} conversationId 
+     * @param {Uint8Array} conversationKey - Plain ConversationKey
+     * @param {boolean} requirePin - Nếu true, yêu cầu PIN unlock. Nếu false, chỉ cache trong memory
+     */
+    async saveConversationKey(conversationId, conversationKey, requirePin = false) {
         try {
-            if (!encryptedConversationKey || typeof encryptedConversationKey !== 'string') {
-                console.warn(`[ConversationKeyService] Invalid encryptedConversationKey for conversation ${conversationId}`);
-                return;
+            // LUÔN cache plain key trong memory (cho device hiện tại đọc ngay)
+            this.keyCache.set(conversationId, conversationKey);
+            console.log(`[ConversationKeyService] Cached ConversationKey in memory for conversation ${conversationId}`);
+
+            // Nếu có PIN unlock → encrypt và lưu vào SecureStore (cho device khác / cold start)
+            const masterUnlockKey = pinService.getMasterUnlockKey();
+            if (masterUnlockKey) {
+                try {
+                    // Encrypt ConversationKey bằng masterUnlockKey (PIN-derived key)
+                    // Format: "iv:ciphertext" (base64)
+                    const encryptedKey = await encryptionService.encryptAESKeyWithMasterKey(conversationKey, masterUnlockKey);
+
+                    // Lưu vào SecureStore
+                    const storageKey = CONVERSATION_KEY_ENCRYPTED_PREFIX + conversationId;
+                    await SecureStore.setItemAsync(storageKey, encryptedKey);
+
+                    console.log(`[ConversationKeyService] Saved encrypted ConversationKey to SecureStore for conversation ${conversationId}`);
+                } catch (encryptError) {
+                    // Nếu encrypt fail (PIN chưa unlock) → chỉ cache trong memory
+                    console.log(`[ConversationKeyService] PIN not unlocked, only caching in memory for conversation ${conversationId}`);
+                }
+            } else if (requirePin) {
+                // Nếu requirePin = true nhưng PIN chưa unlock → throw error
+                throw new Error('PIN chưa được setup hoặc unlock');
+            } else {
+                // Không require PIN → chỉ cache trong memory (OK)
+                console.log(`[ConversationKeyService] No PIN unlock, only caching in memory for conversation ${conversationId}`);
             }
-
-            // Lưu encrypted key vào SecureStore (KHÔNG decrypt)
-            const storageKey = CONVERSATION_KEY_ENCRYPTED_PREFIX + conversationId;
-            await SecureStore.setItemAsync(storageKey, encryptedConversationKey);
-
-            console.log(`[ConversationKeyService] Saved encryptedConversationKey to SecureStore for conversation ${conversationId} (NOT decrypted)`);
         } catch (error) {
-            console.error('[ConversationKeyService] Error saving encryptedConversationKey:', error);
+            console.error('[ConversationKeyService] Error saving ConversationKey:', error);
             throw error;
         }
     }
 
     /**
-     * ✅ CLIENT-SIDE DECRYPTION: Lưu ConversationKey vào memory cache (CHỈ memory, KHÔNG SecureStore)
-     * CHỈ gọi sau khi nhập PIN thành công và decrypt encrypted_conversation_key ở client
+     * Lấy ConversationKey (ưu tiên cache, sau đó decrypt từ PIN-encrypted storage)
      * @param {string} conversationId 
-     * @param {Uint8Array} conversationKey 
-     */
-    cacheInMemoryOnly(conversationId, conversationKey) {
-        if (!conversationKey || conversationKey.length !== 32) {
-            console.error(`[ConversationKeyService] Invalid ConversationKey for ${conversationId}`);
-            return;
-        }
-        this.keyCache.set(conversationId, conversationKey);
-        console.log(`[ConversationKeyService] Cached ConversationKey in memory for conversation ${conversationId}`);
-    }
-
-    /**
-     * ✅ CLIENT-SIDE DECRYPTION: Lấy ConversationKey từ memory cache
-     * CHỈ return từ cache (memory), KHÔNG đọc từ SecureStore
-     * @param {string} conversationId 
-     * @returns {Uint8Array|null} ConversationKey hoặc null nếu không có trong cache
-     */
-    getFromCache(conversationId) {
-        if (this.keyCache.has(conversationId)) {
-            return this.keyCache.get(conversationId);
-        }
-        return null;
-    }
-
-    /**
-     * @deprecated Sử dụng getFromCache() thay thế
-     * CLIENT-SIDE DECRYPTION: ConversationKey CHỈ tồn tại trong memory, không đọc từ SecureStore
+     * @returns {Promise<Uint8Array|null>} ConversationKey hoặc null nếu không có
      */
     async getConversationKey(conversationId) {
-        return this.getFromCache(conversationId);
+        try {
+            // ƯU TIÊN: Kiểm tra cache trước (device hiện tại có quyền đọc ngay)
+            if (this.keyCache.has(conversationId)) {
+                const cachedKey = this.keyCache.get(conversationId);
+                console.log(`[ConversationKeyService] Found ConversationKey in cache for conversation ${conversationId}`);
+                return cachedKey;
+            }
+
+            // Nếu không có trong cache → thử decrypt từ SecureStore (cần PIN unlock)
+            // Kiểm tra PIN đã unlock chưa
+            if (!pinService.isUnlocked()) {
+                console.log(`[ConversationKeyService] PIN not unlocked, no ConversationKey in cache for ${conversationId}`);
+                return null;
+            }
+
+            const masterUnlockKey = pinService.getMasterUnlockKey();
+            if (!masterUnlockKey) {
+                console.log(`[ConversationKeyService] No master unlock key, cannot decrypt ConversationKey for ${conversationId}`);
+                return null;
+            }
+
+            // Lấy encrypted key từ SecureStore
+            const storageKey = CONVERSATION_KEY_ENCRYPTED_PREFIX + conversationId;
+            const encryptedKey = await SecureStore.getItemAsync(storageKey);
+
+            if (!encryptedKey) {
+                console.log(`[ConversationKeyService] No encrypted ConversationKey found in SecureStore for ${conversationId}`);
+                return null;
+            }
+
+            // Decrypt ConversationKey bằng masterUnlockKey
+            const conversationKey = await encryptionService.decryptAESKeyWithMasterKey(encryptedKey, masterUnlockKey);
+
+            if (!conversationKey || conversationKey.length !== 32) {
+                console.error(`[ConversationKeyService] Invalid ConversationKey decrypted for ${conversationId}`);
+                return null;
+            }
+
+            // Cache plain key trong memory (để lần sau không cần PIN)
+            this.keyCache.set(conversationId, conversationKey);
+
+            console.log(`[ConversationKeyService] Decrypted ConversationKey from SecureStore for conversation ${conversationId}`);
+            return conversationKey;
+        } catch (error) {
+            console.error(`[ConversationKeyService] Error getting ConversationKey for ${conversationId}:`, error);
+            return null;
+        }
     }
 
     /**
@@ -97,36 +139,32 @@ class ConversationKeyService {
     }
 
     /**
-     * DEPRECATED: getOrCreateConversationKey - KHÔNG ĐƯỢC DÙNG
-     * INVARIANT: ConversationKey KHÔNG BAO GIỜ được tạo local
-     * ConversationKey CHỈ được fetch từ backend (encrypted) và decrypt sau khi PIN unlock
-     * 
-     * @deprecated Sử dụng getConversationKey() thay thế
+     * Lấy hoặc tạo ConversationKey cho conversation
+     * Device hiện tại có quyền tạo và cache key ngay (không cần PIN)
+     * @param {string} conversationId 
+     * @returns {Promise<Uint8Array>} ConversationKey
      */
     async getOrCreateConversationKey(conversationId) {
-        console.warn(`[ConversationKeyService] getOrCreateConversationKey is deprecated. Use getConversationKey() instead.`);
-        // Chỉ return nếu đã có trong cache (đã decrypt)
-        return await this.getConversationKey(conversationId);
+        let conversationKey = await this.getConversationKey(conversationId);
+
+        if (!conversationKey) {
+            // Generate ConversationKey mới
+            conversationKey = await this.generateConversationKey();
+            // Lưu vào cache (không require PIN) - device hiện tại có quyền đọc ngay
+            // Nếu có PIN unlock → cũng lưu vào SecureStore (cho device khác / cold start)
+            await this.saveConversationKey(conversationId, conversationKey, false);
+            console.log(`[ConversationKeyService] Created new ConversationKey for conversation ${conversationId}`);
+        }
+
+        return conversationKey;
     }
 
     /**
      * Xóa ConversationKey khỏi cache (khi PIN lock)
      */
-    /**
-     * ✅ CLIENT-SIDE DECRYPTION: Clear memory cache
-     * Gọi khi app background hoặc logout
-     */
     clearKeyCache() {
         this.keyCache.clear();
-        console.log('[ConversationKeyService] Cleared ConversationKey cache from memory');
-    }
-
-    /**
-     * ✅ CLIENT-SIDE DECRYPTION: Clear cache khi app background
-     * ConversationKey CHỈ tồn tại trong memory, clear khi app không active
-     */
-    clearOnAppBackground() {
-        this.clearKeyCache();
+        console.log('[ConversationKeyService] Cleared ConversationKey cache');
     }
 
     /**

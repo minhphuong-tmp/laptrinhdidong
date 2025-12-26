@@ -1,11 +1,9 @@
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import * as LocalAuthentication from 'expo-local-authentication'
 import { useRouter } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Keyboard, Pressable, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native'
-import * as LocalAuthentication from 'expo-local-authentication'
-import AsyncStorage from '@react-native-async-storage/async-storage'
-import { useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
+import { ActivityIndicator, Alert, Keyboard, Pressable, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native'
 import Recaptcha from 'react-native-recaptcha-that-works'
 import Icon from '../assets/icons'
 import BackButton from '../components/BackButton'
@@ -89,10 +87,6 @@ const Login = () => {
    const finalizeLogin = async (recaptchaToken) => {
         let email = emailRef.current.trim();
         let password = passwordRef.current.trim();
-
-        try {
-            // Thay thế URL dưới đây bằng URL dự án Supabase thực tế của bạn
-            // Bạn có thể lấy nó trong Settings -> API -> Project URL
             // Ví dụ: https://oktlakdvlmkaalymgrwd.supabase.co
             const PROJECT_URL = 'https://oqtlakdvlmkaalymgrwd.supabase.co'; 
             
@@ -141,15 +135,18 @@ if (data.session && data.user) {
     setAuth(data.user);
     console.log('setAuth called, waiting for AuthContext...');
 }
-            }
-
-        } catch (err) {
-            console.log('Login exception:', err);
-            Alert.alert('Lỗi mạng', 'Không thể kết nối tới server.');
-        } finally {
-            setLoading(false);
-        }
+            try{}
+    catch (err) {
+        console.log('Login exception:', err);
+        Alert.alert('Lỗi mạng', 'Không thể kết nối tới server.');
+    } finally {
+        setLoading(false);
     }
+}
+
+
+
+    
 
     const loginWithBiometric = async () => {
         try {
@@ -333,62 +330,65 @@ if (data.session && data.user) {
 export default Login
 
 const styles = StyleSheet.create({
-
     container: {
         flex: 1,
         gap: 45,
         paddingHorizontal: wp(5),
     },
+
     welcometext: {
-        fontSize: hp[4],
+        fontSize: hp(4),
         fontWeight: theme.fonts.bold,
         color: theme.colors.text,
     },
+
     form: {
         gap: 25,
     },
-    form: {
-        gap: 25,
-    },
+
     forgotPassword: {
         textAlign: 'right',
         fontWeight: theme.fonts.semibold,
-        color: theme.colors.text
+        color: theme.colors.text,
     },
+
     footer: {
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'center',
         gap: 5,
     },
+
     footerText: {
         textAlign: 'center',
         color: theme.colors.text,
-        fontSize: hp(1.6)
+        fontSize: hp(1.6),
     },
+
     biometricContainer: {
         marginTop: 10,
         gap: 15,
     },
-    divider: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
+
     dividerContainer: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: wp(3),
         marginVertical: hp(1),
     },
+
     dividerLine: {
         flex: 1,
         height: 1,
-        backgroundColor: theme.colors.gray,
+        backgroundColor: theme.colors.gray || '#E0E0E0',
     },
+
     dividerText: {
-        color: theme.colors.textLight,
+        color: theme.colors.text,
         fontSize: hp(1.5),
+        opacity: 0.6,
     },
+
     biometricButton: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -401,18 +401,13 @@ const styles = StyleSheet.create({
         borderColor: theme.colors.primary,
         gap: 10,
     },
+
     biometricText: {
         color: theme.colors.primary,
         fontSize: hp(1.7),
         fontWeight: theme.fonts.semiBold,
-    }
-        backgroundColor: theme.colors.gray || '#E0E0E0',
     },
-    dividerText: {
-        color: theme.colors.text,
-        fontSize: hp(1.5),
-        opacity: 0.6,
-    },
+
     microsoftButton: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -428,17 +423,18 @@ const styles = StyleSheet.create({
         shadowRadius: 4,
         elevation: 3,
     },
+
     microsoftButtonDisabled: {
         opacity: 0.6,
     },
+
     microsoftIcon: {
         fontSize: wp(5),
     },
+
     microsoftButtonText: {
         color: '#FFFFFF',
         fontSize: hp(1.8),
         fontWeight: theme.fonts.semibold,
     },
-
-
-})
+});

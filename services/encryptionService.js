@@ -1780,6 +1780,12 @@ class EncryptionService {
         try {
             // Validate inputs
             if (!encryptedContent || typeof encryptedContent !== 'string' || encryptedContent.trim() === '') {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Invalid encryptedContent:', {
+                        type: typeof encryptedContent,
+                        isEmpty: !encryptedContent || encryptedContent.trim() === ''
+                    });
+                }
                 return null;
             }
             if (!(conversationKey instanceof Uint8Array) || conversationKey.length !== 32) {

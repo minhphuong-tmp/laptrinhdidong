@@ -70,18 +70,38 @@ const Home = () => {
         }
     }, [showMenu]);
 
+    // const onLogout = async () => {
+    //     try {
+    //         const { error } = await supabase.auth.signOut();
+    //         if (error) {
+    //             Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+    //         }
+    //         // Không cần setAuth(null) vì AuthContext sẽ tự động handle
+    //     } catch (error) {
+    //         console.log('Logout error:', error);
+    //         Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
+    //     }
+    // }
     const onLogout = async () => {
         try {
             const { error } = await supabase.auth.signOut();
             if (error) {
                 Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+                return;
             }
-            // Không cần setAuth(null) vì AuthContext sẽ tự động handle
-        } catch (error) {
-            console.log('Logout error:', error);
+    
+            // ✅ Xóa credential đã lưu để biometric không tự login lại
+            await AsyncStorage.multiRemove(['saved_email', 'saved_password']);
+    
+            // ✅ Reset AuthContext
+            setAuth(null); // nếu AuthContext tự reset thì có thể bỏ, nhưng tốt nhất nên rõ ràng
+    
+        } catch (err) {
+            console.log('Logout error:', err);
             Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
         }
-    }
+    };
+    
 
     const handleCreatePost = async () => {
         // Chỉ chuyển hướng sang trang tạo bài viết

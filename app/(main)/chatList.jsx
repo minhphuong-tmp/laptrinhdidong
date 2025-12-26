@@ -704,42 +704,26 @@ const ChatList = () => {
     };
 
     const getConversationName = (conversation) => {
-        if (!conversation) return 'Người dùng';
-        
         if (conversation.type === 'group') {
             return conversation.name || 'Nhóm chat';
         }
 
         // Chat 1-1: lấy tên của user khác
-        // ✅ FIX: Thêm null check để tránh lỗi "Cannot read property 'id' of null"
-        if (!conversation.conversation_members || !Array.isArray(conversation.conversation_members)) {
-            return 'Người dùng';
-        }
-        
-        const otherMember = conversation.conversation_members.find(
-            member => member && member.user_id && member.user_id !== user?.id
+        const otherMember = conversation.conversation_members?.find(
+            member => member.user_id !== user.id
         );
-        
         return otherMember?.user?.name || 'Người dùng';
     };
 
     const getConversationAvatar = (conversation) => {
-        if (!conversation) return null;
-        
         if (conversation.type === 'group') {
             return null; // Có thể thêm avatar nhóm sau
         }
 
         // Chat 1-1: lấy avatar của user khác
-        // ✅ FIX: Thêm null check để tránh lỗi "Cannot read property 'id' of null"
-        if (!conversation.conversation_members || !Array.isArray(conversation.conversation_members)) {
-            return null;
-        }
-        
-        const otherMember = conversation.conversation_members.find(
-            member => member && member.user_id && member.user_id !== user?.id
+        const otherMember = conversation.conversation_members?.find(
+            member => member.user_id !== user.id
         );
-        
         return otherMember?.user?.image || null;
     };
 

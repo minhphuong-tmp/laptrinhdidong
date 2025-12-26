@@ -62,19 +62,47 @@ const Home = () => {
         }
     }, [showMenu]);
 
+    // const onLogout = async () => {
+    //     try {
+    //         const { error } = await supabase.auth.signOut();
+    //         if (error) {
+    //             Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+    //         }
+    //         // Không cần setAuth(null) vì AuthContext sẽ tự động handle
+    //     } catch (error) {
+    //         console.log('Logout error:', error);
+    //         Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
+    //     }
+    // }
     const onLogout = async () => {
+        setLoading(true); // Optional: nếu bạn có state loading chung
         try {
+            // 1️⃣ Sign out từ Supabase
             const { error } = await supabase.auth.signOut();
             if (error) {
                 Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
+                return;
             }
-            // Không cần setAuth(null) vì AuthContext sẽ tự động handle
-        } catch (error) {
-            console.log('Logout error:', error);
+    
+            // 2️⃣ Xóa credential đã lưu (biometric)
+            await AsyncStorage.multiRemove(['saved_email', 'saved_password']);
+    
+            // 3️⃣ Reset AuthContext để app biết user đã logout
+            setAuth(null);
+    
+            // 4️⃣ Reset state liên quan tới biometric nếu có
+            setBiometricAvailable(false);
+            setHasSavedCredentials(false);
+    
+            console.log('Logout thành công');
+        } catch (err) {
+            console.log('Logout error:', err);
             Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
+        } finally {
+            setLoading(false);
         }
-    }
-
+    };
+    
     const handleCreatePost = async () => {
         // Chỉ chuyển hướng sang trang tạo bài viết
         router.push('newPost');
