@@ -16,6 +16,7 @@ import Delete from './Delete';
 import DollarSign from './DollarSign';
 import Edit from './Edit';
 import FileText from './FileText';
+import Fingerprint from './Fingerprint';
 import Heart from './Heart';
 import Home from './Home';
 import Image from './Image';
@@ -93,6 +94,7 @@ const icons = {
   'user-check': UserCheck,
   'settings': Settings,
   'message-circle': MessageCircle,
+  'fingerprint': Fingerprint,
   'user-plus': UserPlus,
   mic: Mic,
   micOff: MicOff,
