@@ -197,13 +197,82 @@ export const declineCall = async (callId) => {
 // Kết thúc cuộc gọi
 export const endCall = async (callId, duration = 0) => {
     try {
+        // First, get the current call data to check answered_at
+        const { data: currentCall, error: fetchError } = await supabase
+            .from('call_requests')
+            .select('answered_at, ended_at, duration')
+            .eq('id', callId)
+            .single();
+
+        let finalDuration = duration;
+
+        // Always recalculate from timestamps if available (most accurate)
+        // Priority: 1) Calculate from answered_at and ended_at, 2) Use existing duration, 3) Use passed duration
+        if (currentCall && !fetchError) {
+            if (currentCall.answered_at && currentCall.ended_at) {
+                // Both timestamps available - calculate from them (most accurate)
+                const answeredTime = new Date(currentCall.answered_at);
+                const endedTime = new Date(currentCall.ended_at);
+                const calculatedDuration = Math.floor((endedTime.getTime() - answeredTime.getTime()) / 1000);
+                if (calculatedDuration >= 0) {
+                    finalDuration = calculatedDuration;
+                    console.log('📞 Calculated duration from timestamps in endCall:', finalDuration, 'seconds', {
+                        answered_at: currentCall.answered_at,
+                        ended_at: currentCall.ended_at,
+                        calculated: finalDuration
+                    });
+                } else {
+                    console.log('⚠️ Calculated duration is negative, using existing duration');
+                    finalDuration = currentCall.duration || duration || 0;
+                }
+            } else if (currentCall.answered_at && !currentCall.ended_at) {
+                // Only answered_at available - calculate from answered_at to now
+                const answeredTime = new Date(currentCall.answered_at);
+                const endedTime = new Date(); // Current time (will be set as ended_at)
+                const calculatedDuration = Math.floor((endedTime.getTime() - answeredTime.getTime()) / 1000);
+                if (calculatedDuration >= 0) {
+                    finalDuration = calculatedDuration;
+                    console.log('📞 Calculated duration from answered_at to now:', finalDuration, 'seconds');
+                } else {
+                    finalDuration = currentCall.duration || duration || 0;
+                }
+            } else if (currentCall.duration && currentCall.duration > 0) {
+                // Use existing duration from database if available
+                finalDuration = currentCall.duration;
+                console.log('📞 Using existing duration from database:', finalDuration, 'seconds');
+            }
+        }
+
+        // Prepare update data
+        const updateData = {
+            status: 'ended'
+        };
+
+        // Only update ended_at if it's not already set (to preserve the original end time)
+        const endedAtTime = currentCall?.ended_at ? new Date(currentCall.ended_at) : new Date();
+        if (!currentCall?.ended_at) {
+            updateData.ended_at = endedAtTime.toISOString();
+        }
+
+        // Recalculate duration from answered_at and ended_at after setting ended_at
+        if (currentCall?.answered_at) {
+            const answeredTime = new Date(currentCall.answered_at);
+            const calculatedDuration = Math.floor((endedAtTime.getTime() - answeredTime.getTime()) / 1000);
+            if (calculatedDuration >= 0) {
+                finalDuration = calculatedDuration;
+                console.log('📞 Recalculated duration after setting ended_at:', finalDuration, 'seconds', {
+                    answered_at: currentCall.answered_at,
+                    ended_at: updateData.ended_at || currentCall.ended_at,
+                    calculated: finalDuration
+                });
+            }
+        }
+
+        updateData.duration = finalDuration;
+
         const { data, error } = await supabase
             .from('call_requests')
-            .update({
-                status: 'ended',
-                ended_at: new Date().toISOString(),
-                duration: duration
-            })
+            .update(updateData)
             .eq('id', callId)
             .select(`
                 *,

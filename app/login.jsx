@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native'
 import * as LocalAuthentication from 'expo-local-authentication'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { useRef, useState } from 'react'
+import { ActivityIndicator, Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
+import Recaptcha from 'react-native-recaptcha-that-works'
 import Icon from '../assets/icons'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
@@ -13,10 +16,13 @@ import { theme } from '../constants/theme'
 import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
+//6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2
+import { signInWithMicrosoft } from '../services/authService'
 
 
 
 const Login = () => {
+    const [capVal, setCapVal] = useState(null);
     const router = useRouter()
     const { setAuth } = useAuth()
 
@@ -51,44 +57,95 @@ const Login = () => {
             console.log('Check saved credentials error:', error);
         }
     };
+    const [microsoftLoading, setMicrosoftLoading] = useState(false);
 
-    const onSubmit = async () => {
-        if (!emailRef.current || !passwordRef.current) {
-            Alert.alert('Đăng nhập', "Làm ơn nhập đầy đủ thông tin!");
-            return;
+    const handleMicrosoftLogin = async () => {
+        setMicrosoftLoading(true);
+        try {
+            const result = await signInWithMicrosoft();
+            if (result.success) {
+                // AuthContext sẽ tự động handle navigation
+                console.log('Microsoft login successful');
+            }
+        } catch (error) {
+            console.error('Microsoft login error:', error);
+        } finally {
+            setMicrosoftLoading(false);
         }
+    };
 
+    // [Thêm mới] Ref và Key cho reCAPTCHA
+    const recaptchaRef = useRef(null);
+    const SITE_KEY = '6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2'; // Khóa Public của bạn
+
+    // [Thêm mới] Hàm Xử lý Xác minh reCAPTCHA
+    const handleRecaptchaVerify = async (token) => {
+        console.log('reCAPTCHA Token:', token);
+        // Sau khi có token, tiến hành đăng nhập
+        await finalizeLogin(token);
+    };
+
+    // [Thêm mới] Hàm xử lý Đăng nhập Chính (Bao gồm Token)
+   const finalizeLogin = async (recaptchaToken) => {
         let email = emailRef.current.trim();
         let password = passwordRef.current.trim();
 
-        console.log('Attempting login with:', email);
-        setLoading(true);
-
         try {
-            const { data: { session }, error } = await supabase.auth.signInWithPassword({
-                email,
-                password,
+            // Thay thế URL dưới đây bằng URL dự án Supabase thực tế của bạn
+            // Bạn có thể lấy nó trong Settings -> API -> Project URL
+            // Ví dụ: https://oktlakdvlmkaalymgrwd.supabase.co
+            const PROJECT_URL = 'https://oqtlakdvlmkaalymgrwd.supabase.co'; 
+            
+            const response = await fetch(`${PROJECT_URL}/functions/v1/auth-login`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    // Nếu bạn có bật "Enforce JWT Verification" cho function thì cần thêm header Authorization
+                    // 'Authorization': `Bearer ${supabaseKey}` 
+                },
+                body: JSON.stringify({
+                    email: email,
+                    password: password,
+                    recaptchaToken: recaptchaToken, 
+                }),
             });
 
-            console.log('Login response:', { session: !!session, error: error?.message });
+            const data = await response.json();
 
-            if (error) {
-                console.log('Login error:', error);
-                Alert.alert('Lỗi đăng nhập', error.message);
-            } else if (session) {
-                console.log('Login successful, session:', session.user.id);
+ // Kiểm tra status code trả về từ Edge Function
+if (!response.ok) {
+    Alert.alert('Đăng nhập thất bại', data.message || 'Có lỗi xảy ra.');
+    return;
+}
 
-                // Lưu thông tin đăng nhập để sử dụng cho vân tay lần sau
-                await AsyncStorage.setItem('saved_email', email);
-                await AsyncStorage.setItem('saved_password', password);
+// Nếu đăng nhập thành công qua Edge Function
+console.log('Login successful via Edge Function');
 
-                // AuthContext sẽ tự động handle navigation
-                setAuth(session.user);
-                console.log('setAuth called, waiting for AuthContext...');
+if (data.session && data.user) {
+    // Cập nhật session vào Supabase Client
+    const { error: sessionError } = await supabase.auth.setSession({
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+    });
+
+    if (sessionError) {
+        Alert.alert('Lỗi Session', sessionError.message);
+        return;
+    }
+
+    // ✅ GỘP LOGIC TỪ NHÁNH Long: lưu credential cho biometric
+    await AsyncStorage.setItem('saved_email', email);
+    await AsyncStorage.setItem('saved_password', password);
+
+    // AuthContext sẽ tự động handle navigation
+    setAuth(data.user);
+    console.log('setAuth called, waiting for AuthContext...');
+}
             }
+
         } catch (err) {
             console.log('Login exception:', err);
-            Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng nhập');
+            Alert.alert('Lỗi mạng', 'Không thể kết nối tới server.');
         } finally {
             setLoading(false);
         }
@@ -147,6 +204,21 @@ const Login = () => {
     };
 
 
+    const onSubmit = async () => {
+        if (!emailRef.current || !passwordRef.current) {
+            Alert.alert('Đăng nhập', "Làm ơn nhập đầy đủ thông tin!");
+            return;
+        }
+
+        setLoading(true);
+        
+        // [Sửa đổi] Thay vì đăng nhập trực tiếp, gọi reCAPTCHA Modal
+        recaptchaRef.current.open(); 
+        
+        // Hàm đăng nhập chính (finalizeLogin) sẽ được gọi sau khi reCAPTCHA xác minh thành công
+    }
+
+
     return (
         <ScreenWrapper>
             <StatusBar style="dark" />
@@ -182,6 +254,45 @@ const Login = () => {
                         </Text>
                         {/* button */}
                         <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
+                       
+                        <Recaptcha
+                ref={recaptchaRef}
+                siteKey={SITE_KEY}
+                // Dùng địa chỉ IP cục bộ của máy tính bạn hoặc một URL bạn kiểm soát 
+                // đã được đăng ký với Google reCAPTCHA
+                baseUrl="http://localhost" 
+                onVerify={handleRecaptchaVerify} // Hàm xử lý sau khi xác minh thành công
+                onExpire={() => { // Xử lý khi token hết hạn
+                    Alert.alert("reCAPTCHA", "Mã xác minh đã hết hạn. Vui lòng thử lại.");
+                    setLoading(false);
+                }}
+                size="normal"
+                lang="vi" // Hiển thị tiếng Việt
+                theme="light"
+            />  
+
+                        {/* Divider */}
+                        <View style={styles.dividerContainer}>
+                            <View style={styles.dividerLine} />
+                            <Text style={styles.dividerText}>Hoặc</Text>
+                            <View style={styles.dividerLine} />
+                        </View>
+
+                        {/* Microsoft Login Button */}
+                        <Pressable
+                            style={[styles.microsoftButton, microsoftLoading && styles.microsoftButtonDisabled]}
+                            onPress={handleMicrosoftLogin}
+                            disabled={microsoftLoading || loading}
+                        >
+                            {microsoftLoading ? (
+                                <ActivityIndicator color="#FFFFFF" size="small" />
+                            ) : (
+                                <>
+                                    <Text style={styles.microsoftIcon}>🔷</Text>
+                                    <Text style={styles.microsoftButtonText}>Đăng nhập với Microsoft</Text>
+                                </>
+                            )}
+                        </Pressable>
 
                         {/* Nút đăng nhập bằng vân tay */}
                         {biometricAvailable && hasSavedCredentials && (
@@ -263,6 +374,11 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 10,
+    dividerContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: wp(3),
+        marginVertical: hp(1),
     },
     dividerLine: {
         flex: 1,
@@ -290,6 +406,39 @@ const styles = StyleSheet.create({
         fontSize: hp(1.7),
         fontWeight: theme.fonts.semiBold,
     }
+        backgroundColor: theme.colors.gray || '#E0E0E0',
+    },
+    dividerText: {
+        color: theme.colors.text,
+        fontSize: hp(1.5),
+        opacity: 0.6,
+    },
+    microsoftButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#00A4EF',
+        paddingVertical: hp(1.8),
+        paddingHorizontal: wp(5),
+        borderRadius: theme.radius.md,
+        gap: wp(3),
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    microsoftButtonDisabled: {
+        opacity: 0.6,
+    },
+    microsoftIcon: {
+        fontSize: wp(5),
+    },
+    microsoftButtonText: {
+        color: '#FFFFFF',
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.semibold,
+    },
 
 
 })

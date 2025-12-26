@@ -31,7 +31,7 @@ export const getUserData = async (userId) => {
             updated_at: authData.user?.updated_at
         };
 
-        console.log('Merged user data:', mergedData);
+
         return { success: true, data: mergedData };
     } catch (error) {
         console.log('got error: ', error);

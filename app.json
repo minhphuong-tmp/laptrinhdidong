@@ -2,7 +2,7 @@
   "expo": {
     "name": "laptrinhdidong",
     "slug": "laptrinhdidong",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "laptrinhdidong",
@@ -43,6 +43,9 @@
     },
     "plugins": [
       "expo-router",
+      "expo-dev-client",
+      "expo-secure-store",
+      "expo-document-picker",
       [
         "expo-splash-screen",
         {
@@ -53,6 +56,11 @@
         }
       ]
     ],
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "experiments": {
       "typedRoutes": true
     },

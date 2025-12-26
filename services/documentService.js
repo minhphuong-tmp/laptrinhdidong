@@ -1,9 +1,20 @@
+import { decode } from 'base64-arraybuffer';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
+import { loadDocumentsCache } from '../utils/cacheHelper';
 
 export const documentService = {
     // Lấy tất cả tài liệu
-    getAllDocuments: async () => {
+    getAllDocuments: async (userId = null, useCache = true) => {
         try {
+            // Check cache trước nếu có userId
+            if (useCache && userId) {
+                const cached = await loadDocumentsCache(userId);
+                if (cached && cached.data) {
+                    return { success: true, data: cached.data, fromCache: true };
+                }
+            }
+
             const { data, error } = await supabase
                 .from('documents')
                 .select(`
@@ -34,7 +45,10 @@ export const documentService = {
                 tags: doc.tags || []
             }));
 
-            return { success: true, data: transformedData };
+            // Removed: Không tự động cache ở đây, chỉ cache khi prefetch
+            // Cache chỉ được tạo trong prefetchService.js
+
+            return { success: true, data: transformedData, fromCache: false };
         } catch (error) {
             console.log('Error in getAllDocuments:', error);
             return { success: false, msg: error.message, data: [] };
@@ -77,6 +91,47 @@ export const documentService = {
         } catch (error) {
             console.log('Error in getDocumentById:', error);
             return { success: false, msg: error.message };
+        }
+    },
+
+    // Upload file tài liệu lên Supabase Storage
+    uploadDocumentFile: async (fileUri, uploaderId, fileName) => {
+        try {
+            // Đọc file thành base64
+            const fileBase64 = await FileSystem.readAsStringAsync(fileUri, {
+                encoding: 'base64',
+            });
+
+            // Decode base64 thành array buffer
+            const fileData = decode(fileBase64);
+
+            // Tạo đường dẫn: documents/<uploader_id>/<file_name>
+            const filePath = `documents/${uploaderId}/${fileName}`;
+
+            // Upload lên bucket 'upload' (bucket mặc định)
+            const bucketName = 'upload';
+
+            console.log('Uploading document to bucket:', bucketName, 'with path:', filePath);
+
+            const { data, error } = await supabase
+                .storage
+                .from(bucketName)
+                .upload(filePath, fileData, {
+                    cacheControl: '3600',
+                    upsert: false,
+                    contentType: 'application/octet-stream'
+                });
+
+            if (error) {
+                console.log('Document upload error:', error);
+                return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
+            }
+
+            console.log('Document upload success:', data);
+            return { success: true, data: data.path };
+        } catch (error) {
+            console.log('Document upload error:', error);
+            return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
         }
     },
 

@@ -3,14 +3,18 @@ import { Image } from 'expo-image';
 import moment from 'moment/moment';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import RenderHTML from 'react-native-render-html';
 import Icon from '../assets/icons';
 import { theme } from '../constants/theme';
 import { hp, stripHtmlTags, wp } from '../helpers/common';
 import { downloadFile, getSupabaseFileUrl } from '../services/imageService';
+import { notificationService } from '../services/notificationService';
 import { createPostLike, removePostLike } from '../services/postService';
 import Avatar from './Avatar';
 import Loading from './Loading';
+
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 // const tagsStyles = {
 //     div: textStyles,
 //     p: textStyles,
@@ -29,6 +33,7 @@ const PostCard = ({
     showDelete = false,
     onDelete = () => { },
     onEdit = () => { },
+    index = 0,
 }) => {
     const textStyles = useMemo(() => ({
         color: theme.colors.dark,
@@ -100,6 +105,18 @@ const PostCard = ({
                     Alert.alert('Lỗi', `Không thể like: ${res.msg}`);
                 } else {
                     console.log('Like added successfully');
+                    // Tạo notification nếu like post của người khác
+                    if (currentUser?.id !== item?.userId) {
+                        notificationService.createNotification({
+                            senderId: currentUser?.id,
+                            receiverId: item?.userId,
+                            type: 'like',
+                            title: 'Đã thích bài viết của bạn',
+                            postId: item?.id
+                        }).catch(error => {
+                            console.error('Error creating like notification:', error);
+                        });
+                    }
                 }
             }
         } catch (error) {
@@ -149,6 +166,47 @@ const PostCard = ({
     const createdAt = moment(item?.created_at).format('DD/MM/YYYY');
     const liked = likes.some(like => like.userId === currentUser?.id);
 
+    // Animation for action buttons
+    const likeScale = useSharedValue(1);
+    const shareScale = useSharedValue(1);
+    const commentScale = useSharedValue(1);
+
+    const likeAnimatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: likeScale.value }],
+    }));
+
+    const shareAnimatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: shareScale.value }],
+    }));
+
+    const commentAnimatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: commentScale.value }],
+    }));
+
+    const handleLikePressIn = () => {
+        likeScale.value = withTiming(0.98, { duration: 100 });
+    };
+
+    const handleLikePressOut = () => {
+        likeScale.value = withTiming(1, { duration: 100 });
+    };
+
+    const handleSharePressIn = () => {
+        shareScale.value = withTiming(0.98, { duration: 100 });
+    };
+
+    const handleSharePressOut = () => {
+        shareScale.value = withTiming(1, { duration: 100 });
+    };
+
+    const handleCommentPressIn = () => {
+        commentScale.value = withTiming(0.98, { duration: 100 });
+    };
+
+    const handleCommentPressOut = () => {
+        commentScale.value = withTiming(1, { duration: 100 });
+    };
+
     return (
         <View style={[styles.container, hasShadow && shadowStyles]}>
             {/* Facebook Post Header */}
@@ -157,7 +215,6 @@ const PostCard = ({
                     <Avatar
                         size={hp(4)}
                         uri={(() => {
-                            console.log('PostCard - item.user.image:', item?.user?.image);
                             return item?.user?.image;
                         })()}
                         rounded={theme.radius.full}
@@ -204,6 +261,9 @@ const PostCard = ({
                         transition={100}
                         style={styles.postMedia}
                         contentFit="cover"
+                        onError={() => {
+                            // Silent fail in production logs; consider toast if needed
+                        }}
                     />
                 )}
                 {item?.file && item?.file.includes('postVideos') && (
@@ -270,7 +330,12 @@ const PostCard = ({
 
                 {/* Action Buttons */}
                 <View style={styles.actionButtons}>
-                    <TouchableOpacity onPress={onLike} style={styles.actionButton}>
+                    <AnimatedTouchableOpacity
+                        onPress={onLike}
+                        onPressIn={handleLikePressIn}
+                        onPressOut={handleLikePressOut}
+                        style={[styles.actionButton, likeAnimatedStyle]}
+                    >
                         <Icon
                             name="heart"
                             size={hp(2.2)}
@@ -278,19 +343,29 @@ const PostCard = ({
                             color={liked ? '#F02849' : theme.colors.textSecondary}
                         />
                         <Text style={[styles.actionText, liked && styles.likedActionText]}>Thích</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={openPostDetails} style={styles.actionButton}>
+                    </AnimatedTouchableOpacity>
+                    <AnimatedTouchableOpacity
+                        onPress={openPostDetails}
+                        onPressIn={handleCommentPressIn}
+                        onPressOut={handleCommentPressOut}
+                        style={[styles.actionButton, commentAnimatedStyle]}
+                    >
                         <Icon name="comment" size={hp(2.2)} color={theme.colors.textSecondary} />
                         <Text style={styles.actionText}>Bình luận</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={onShare} style={styles.actionButton}>
+                    </AnimatedTouchableOpacity>
+                    <AnimatedTouchableOpacity
+                        onPress={onShare}
+                        onPressIn={handleSharePressIn}
+                        onPressOut={handleSharePressOut}
+                        style={[styles.actionButton, shareAnimatedStyle]}
+                    >
                         {loading ? (
                             <Loading size="small" />
                         ) : (
                             <Icon name="share" size={hp(2.2)} color={theme.colors.textSecondary} />
                         )}
                         <Text style={styles.actionText}>Chia sẻ</Text>
-                    </TouchableOpacity>
+                    </AnimatedTouchableOpacity>
                 </View>
             </View>
         </View>

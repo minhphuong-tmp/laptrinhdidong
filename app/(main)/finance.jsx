@@ -1,355 +1,412 @@
 import React, { useState } from 'react';
-import {
-    FlatList,
-    SafeAreaView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
-} from 'react-native';
-import Icon from '../../assets/icons';
-import Header from '../../components/Header';
-import { theme } from '../../constants/theme';
-import { hp, wp } from '../../helpers/common';
+import { View, Text, Image, ImageBackground, Pressable, ScrollView, TextInput } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { BlurView } from 'expo-blur';
 
 const Finance = () => {
-    // MOCK DATA - Quản lý tài chính
-    const [transactions] = useState([
+    const router = useRouter();
+    const [activeFilter, setActiveFilter] = useState('all');
+    const [searchQuery, setSearchQuery] = useState('');
+
+    // Event data
+    const events = [
         {
             id: 1,
-            type: 'income',
-            title: 'Đóng phí thành viên',
-            amount: 500000,
-            date: '2024-01-15',
-            category: 'Membership',
-            description: 'Phí thành viên tháng 1/2024'
+            title: 'Workshop: Intro to React Native',
+            date: '14:00 - 20/10/2023',
+            location: 'Hội trường B, Tòa nhà CNTT',
+            status: 'upcoming',
+            statusText: 'Sắp diễn ra',
+            statusColor: 'primary',
+            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAUBeGzTzmSZGFp69U3ZJKc9mdQGPTadKuKNZM6seYH0VFv39yh7bxDvzyOTjbtloaXz6kINAHUiaG6sFKaxqj7RUt9puw_vkxiYFM3Yls4EWgQMTDlC63ajIpRjlbFGmkrKDQWovSrQ528eNBU8xrwthQOAOZ4f35Yt5aoz_P-SmuyEx4hN1ocSUl1AG2VMSLa1-UpBx-zPu0Yg11A-AN9HcfYxVlcZtDBCSvYNQVlV6zeVMtod-qZuA_BOx36r7hIUBUlgkgGHG5F',
+            participants: 45,
+            actionButton: { text: 'Đăng ký ngay', type: 'primary' }
         },
         {
             id: 2,
-            type: 'expense',
-            title: 'Mua thiết bị workshop',
-            amount: 2000000,
-            date: '2024-01-10',
-            category: 'Equipment',
-            description: 'Mua laptop và thiết bị cho workshop'
+            title: 'AI Challenge Hackathon 2023',
+            date: '08:00 - 05/11/2023',
+            location: 'Innovation Hub, Tầng 3',
+            status: 'registered',
+            statusText: 'Đã đăng ký',
+            statusColor: 'emerald',
+            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC2kR5vIOfO9apWLfdMMIXAsfZY9NYhcNtsMHFyaDYMO5-w7fHTaMdMKfBlmxYR_wg5SaBZIglqqjFy4eqK9c_JICXn4YNnP9QgxPAQBCdu1Gz8qDXVN4UT5S1hxbchpPPeZ-Q-igrBbr62zVIkO7ed6IgwSXT5zP6FVPvsPMswHg5rlwunvlRDz6uSiFoYjJBDHjAXb9dEFvZs19wItzBfRHRjC8vpVmST-paGJvomYixrJ-RdAyLQj-cWnlu6ZXnQFBuFKTIPMpQF',
+            hasTicket: true,
+            actionButton: { text: 'Chi tiết', type: 'secondary' }
         },
         {
             id: 3,
-            type: 'income',
-            title: 'Tài trợ từ công ty ABC',
-            amount: 5000000,
-            date: '2024-01-08',
-            category: 'Sponsorship',
-            description: 'Tài trợ cho dự án Hackathon'
+            title: 'Teambuilding: Kết nối thành viên',
+            date: '15/09/2023 • CV Thống Nhất',
+            status: 'ended',
+            statusText: 'Đã kết thúc',
+            statusColor: 'gray',
+            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAz7OZxwoyrmAT0MlKQylqqxiECmZ8_gcLop_3WxIFuLsklFRdz2_HgJczNFIgIIKz8IgsFOzN99HHXsZyJiTQQqFC0LdLDke4CTSA_i9YYUKA-HraYsaNJ73hslbA9S4DwRI4VIe3ydOGNpni0PFry9vt7s4upS-GUEYpDnV5kZytWU8IFmcOz1tOT9oyyS6Igjbgjk2d4rizpAjNUpdiJQmFdfcV012iKG952ztyyPnQz-lkPjG8y6GiLGFvInUYAOMyxImBYHibn',
+            isAdmin: true,
+            isCompact: true
         },
         {
             id: 4,
-            type: 'expense',
-            title: 'Chi phí tổ chức sự kiện',
-            amount: 1500000,
-            date: '2024-01-05',
-            category: 'Event',
-            description: 'Chi phí thuê phòng và thiết bị'
-        },
-        {
-            id: 5,
-            type: 'income',
-            title: 'Bán vé workshop',
-            amount: 800000,
-            date: '2024-01-03',
-            category: 'Ticket',
-            description: 'Bán vé workshop React Native'
+            title: 'Seminar: Tech Trends 2024',
+            date: '09:00 - 12/11/2023',
+            location: 'Hội trường A',
+            slotsRemaining: 15,
+            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDtPZsBldz5zS-kvprjdJOZNothxYIqLhmRYUX9l3gWWEOFdnUG9Nluj-J2hLVpxgCVXQgI2QysM5RMy13sF37tEanWVFigToNtVBEk_qowV8KbxaTvCB-prX8OqpT7M7l4r3dpuZwcH_WLZuWSepWNFnL_vqIwes47OmPE_k7kHHPpq5vp9NCNLt7IMatHsct_08ijanf_EC69zuq1y7MPGiVsHJEYFRnkTxpa4_BcEmp_wtjNalefzXqfFF6hcAw-nOE7rhNOSSf0',
+            actionButton: { text: 'Đăng ký ngay', type: 'primary' }
         }
-    ]);
+    ];
 
-    const [budget] = useState({
-        total: 10000000,
-        spent: 3500000,
-        remaining: 6500000
-    });
+    const filters = [
+        { id: 'all', label: 'Tất cả', icon: 'tune' },
+        { id: 'upcoming', label: 'Sắp tới', icon: 'schedule' },
+        { id: 'registered', label: 'Đã đăng ký', icon: 'check-circle' },
+        { id: 'workshop', label: 'Workshop', icon: 'build' },
+        { id: 'hackathon', label: 'Hackathon', icon: 'code' }
+    ];
 
-    const getTransactionIcon = (type) => {
-        return type === 'income' ? 'plus' : 'delete';
-    };
+    const avatarUrls = [
+        'https://lh3.googleusercontent.com/aida-public/AB6AXuCM2zmMqd8u6K9r2YfgrXCxuCuzzxV5_eBFoqL9mNyl6NTzD7GbiibtcLU_sWKUWnFs83gUdARebvvqF18OZXdNlEuqVIAH-mqWMkb5rITf7O16pGs6F6X-g_GJpe9DBoS6qVwY9FfmclAwnHYaGat4TSaZblXBG5F1zNf-GBBeAJ4KrYGVXjfQtOYfhBPXAwqUXZydZaiNCdq4DpqU0iH1CYDJNjwnRBW-k3-5ZJeQNQB9s2HOJFKjCmUi0-3N_lpeJSHGAL2Odrr8',
+        'https://lh3.googleusercontent.com/aida-public/AB6AXuCtSLfTpDWOqligCvKs6Uv21r9qjrDdqF2xw5tHN3mC39_DGZ6Nwi4oOR-54MIKD_5DeMp3uHAFb0gEqdESrlMoyHKbuu1Hg9wdFMoPSN4eI2yC3Wwryey9t1sf_g5c3r94PGXnlmxZc2Pdwj-LaUr9VOBcUN6LGwZEVUEAMJiw3fU3WeaYsg3SQNKpFZZOx_FzMF5jCz6ErXBhugy-EcbyVJJGiN9hBDV5sIkct7-jjrYARk-70KBb3hslomsbu8KZKU2-xU-Wuey3'
+    ];
 
-    const getTransactionColor = (type) => {
-        return type === 'income' ? '#4CAF50' : '#F44336';
-    };
-
-    const getCategoryColor = (category) => {
-        switch (category) {
-            case 'Membership': return '#2196F3';
-            case 'Equipment': return '#FF9800';
-            case 'Sponsorship': return '#4CAF50';
-            case 'Event': return '#9C27B0';
-            case 'Ticket': return '#00BCD4';
-            default: return theme.colors.textSecondary;
-        }
-    };
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('vi-VN', {
-            style: 'currency',
-            currency: 'VND'
-        }).format(amount);
-    };
-
-    const renderTransaction = ({ item }) => (
-        <View style={styles.transactionCard}>
-            <View style={styles.transactionHeader}>
-                <View style={styles.transactionInfo}>
-                    <View style={styles.transactionIcon}>
-                        <Icon name={getTransactionIcon(item.type)} size={hp(2)} color={getTransactionColor(item.type)} />
-                    </View>
-                    <View style={styles.transactionDetails}>
-                        <Text style={styles.transactionTitle}>{item.title}</Text>
-                        <Text style={styles.transactionDescription}>{item.description}</Text>
-                    </View>
-                </View>
-                <View style={styles.transactionAmount}>
-                    <Text style={[styles.amountText, { color: getTransactionColor(item.type) }]}>
-                        {item.type === 'income' ? '+' : '-'}{formatCurrency(item.amount)}
-                    </Text>
-                    <Text style={styles.transactionDate}>{item.date}</Text>
-                </View>
+    // Top Bar Component
+    const TopBar = () => (
+        <BlurView intensity={30} className="sticky top-0 z-50 bg-[#101f22]/90 border-b border-white/5">
+            <View className="flex-row items-center justify-between px-4 py-3">
+                <Pressable
+                    className="w-10 h-10 items-center justify-center rounded-full"
+                    onPress={() => router.back()}
+                >
+                    <MaterialIcons name="arrow-back" size={24} color="#ffffff" />
+                </Pressable>
+                <Text className="text-lg font-bold tracking-tight text-white">
+                    Sự kiện CLB
+                </Text>
+                <Pressable className="w-10 h-10 items-center justify-center rounded-full relative">
+                    <MaterialIcons name="notifications" size={24} color="#ffffff" />
+                    <View className="absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500 border-2 border-[#101f22]" />
+                </Pressable>
             </View>
-            <View style={styles.transactionFooter}>
-                <View style={[styles.categoryBadge, { backgroundColor: getCategoryColor(item.category) }]}>
-                    <Text style={styles.categoryText}>{item.category}</Text>
+        </BlurView>
+    );
+
+    // Search Bar Component
+    const SearchBar = () => (
+        <View className="px-4 py-3 bg-[#101f22]">
+            <View className="flex-row w-full items-center rounded-xl bg-[#224249] h-12">
+                <View className="pl-4">
+                    <MaterialIcons name="search" size={24} color="#90c1cb" />
+                </View>
+                <TextInput
+                    className="flex-1 bg-transparent text-base font-medium px-3 h-full text-white"
+                    placeholder="Tìm kiếm sự kiện, workshop..."
+                    placeholderTextColor="#90c1cb70"
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                />
+                <Pressable className="pr-4">
+                    <MaterialIcons name="mic" size={24} color="#90c1cb" />
+                </Pressable>
+            </View>
+        </View>
+    );
+
+    // Filter Chips Component
+    const FilterChips = () => (
+        <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            className="flex-row gap-3 px-4 py-2 mb-2"
+            contentContainerStyle={{ paddingRight: 16 }}
+        >
+            {filters.map((filter) => {
+                const isActive = activeFilter === filter.id;
+                return (
+                    <Pressable
+                        key={filter.id}
+                        className={`flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full px-3 pr-4 ${
+                            isActive
+                                ? 'bg-[#0dccf2]'
+                                : 'bg-[#224249] border border-white/5'
+                        }`}
+                        onPress={() => setActiveFilter(filter.id)}
+                        style={
+                            isActive
+                                ? {
+                                      shadowColor: '#0dccf2',
+                                      shadowOffset: { width: 0, height: 0 },
+                                      shadowOpacity: 0.3,
+                                      shadowRadius: 15,
+                                      elevation: 5
+                                  }
+                                : {}
+                        }
+                    >
+                        <MaterialIcons
+                            name={filter.icon}
+                            size={20}
+                            color={isActive ? '#101f22' : '#ffffff'}
+                        />
+                        <Text className={`text-sm ${
+                            isActive
+                                ? 'text-[#101f22] font-bold'
+                                : 'text-white font-medium'
+                        }`}>
+                            {filter.label}
+                        </Text>
+                    </Pressable>
+                );
+            })}
+        </ScrollView>
+    );
+
+    // Status Badge Component
+    const StatusBadge = ({ statusColor, statusText }) => {
+        const badgeStyles = {
+            primary: {
+                bg: 'bg-white/90',
+                border: 'border-[#0dccf2]/20',
+                text: 'text-[#0dccf2]'
+            },
+            emerald: {
+                bg: 'bg-emerald-500/20',
+                border: 'border-emerald-500/20',
+                text: 'text-emerald-400'
+            },
+            gray: {
+                bg: 'bg-gray-500/20',
+                border: 'border-gray-500/20',
+                text: 'text-gray-400'
+            }
+        };
+
+        const style = badgeStyles[statusColor] || badgeStyles.primary;
+
+        return (
+            <View className={`absolute top-3 right-3 z-10`}>
+                <BlurView intensity={15} className={`inline-flex items-center rounded-full px-2.5 py-1 border ${style.bg} ${style.border}`}>
+                    <Text className={`text-xs font-bold ${style.text}`}>
+                        {statusText}
+                    </Text>
+                </BlurView>
+            </View>
+        );
+    };
+
+    // Avatar Stack Component
+    const AvatarStack = ({ participants }) => (
+        <View className="flex-row" style={{ marginLeft: -8 }}>
+            {avatarUrls.map((url, idx) => (
+                <Image
+                    key={idx}
+                    source={{ uri: url }}
+                    className="w-8 h-8 rounded-full border-2 border-[#182f34]"
+                    style={{ marginLeft: idx > 0 ? -8 : 0 }}
+                />
+            ))}
+            <View className="w-8 h-8 rounded-full bg-gray-700 items-center justify-center border-2 border-[#182f34]" style={{ marginLeft: -8 }}>
+                <Text className="text-xs font-medium text-gray-300">
+                    +{participants - 2}
+                </Text>
+            </View>
+        </View>
+    );
+
+    // Full Event Card Component
+    const FullEventCard = ({ event }) => (
+        <View className="relative overflow-hidden rounded-xl bg-[#182f34]" style={{ shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 20, elevation: 4 }}>
+            <StatusBadge statusColor={event.statusColor} statusText={event.statusText} />
+
+            <ImageBackground
+                source={{ uri: event.image }}
+                className="h-40 w-full"
+                imageStyle={{ resizeMode: 'cover' }}
+            >
+                {/* Gradient overlay layers */}
+                <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '100%', backgroundColor: 'rgba(0,0,0,0.2)' }} />
+                <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '50%', backgroundColor: 'rgba(0,0,0,0.4)' }} />
+                <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '25%', backgroundColor: 'rgba(0,0,0,0.8)' }} />
+            </ImageBackground>
+
+            <View className="flex-col p-4 gap-3">
+                <Text className="text-xl font-bold leading-tight text-white">
+                    {event.title}
+                </Text>
+
+                <View className="flex-col gap-2">
+                    <View className="flex-row items-center gap-2">
+                        <MaterialIcons name="calendar-month" size={18} color="#90c1cb" />
+                        <Text className="text-sm font-medium text-[#90c1cb]">
+                            {event.date}
+                        </Text>
+                    </View>
+                    {event.location && (
+                        <View className="flex-row items-center gap-2">
+                            <MaterialIcons name="location-on" size={18} color="#90c1cb" />
+                            <Text className="text-sm font-medium text-[#90c1cb]">
+                                {event.location}
+                            </Text>
+                    </View>
+                    )}
+                </View>
+
+                <View className="mt-2 flex-row items-center justify-between border-t border-white/10 pt-4">
+                    {event.hasTicket ? (
+                        <View className="flex-row items-center gap-1">
+                            <MaterialIcons name="check-circle" size={18} color="#10b981" />
+                            <Text className="text-sm font-medium text-emerald-400">
+                                Bạn đã có vé
+                    </Text>
+                </View>
+                    ) : event.slotsRemaining ? (
+                        <Text className="text-sm text-gray-400">
+                            Còn {event.slotsRemaining} slot
+                        </Text>
+                    ) : event.participants ? (
+                        <AvatarStack participants={event.participants} />
+                    ) : null}
+
+                    {event.actionButton && (
+                        <Pressable
+                            className={`rounded-full font-bold text-sm px-5 py-2.5 ${
+                                event.actionButton.type === 'primary'
+                                    ? 'bg-[#0dccf2]'
+                                    : 'bg-white/10'
+                            }`}
+                            style={
+                                event.actionButton.type === 'primary'
+                                    ? {
+                                          shadowColor: '#0dccf2',
+                                          shadowOffset: { width: 0, height: 0 },
+                                          shadowOpacity: 0.4,
+                                          shadowRadius: 10,
+                                          elevation: 8
+                                      }
+                                    : {}
+                            }
+                        >
+                            <Text className={`text-sm font-bold ${
+                                event.actionButton.type === 'primary'
+                                    ? 'text-[#101f22]'
+                                    : 'text-white'
+                            }`}>
+                                {event.actionButton.text}
+                            </Text>
+                        </Pressable>
+                    )}
                 </View>
             </View>
         </View>
     );
 
-    return (
-        <SafeAreaView style={styles.container}>
-            <Header title="Quản lý tài chính" showBackButton />
+    // Compact Event Card Component (for admin events)
+    const CompactEventCard = ({ event }) => (
+        <View className="relative overflow-hidden rounded-xl bg-[#182f34]" style={{ opacity: 0.8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 20, elevation: 4 }}>
+            <StatusBadge statusColor={event.statusColor} statusText={event.statusText} />
 
-            <View style={styles.budgetContainer}>
-                <Text style={styles.budgetTitle}>Ngân sách CLB</Text>
-                <View style={styles.budgetStats}>
-                    <View style={styles.budgetItem}>
-                        <Text style={styles.budgetLabel}>Tổng ngân sách</Text>
-                        <Text style={styles.budgetAmount}>{formatCurrency(budget.total)}</Text>
+            <View className="flex-row h-32">
+                <ImageBackground
+                    source={{ uri: event.image }}
+                    className="w-32 shrink-0"
+                    imageStyle={{ resizeMode: 'cover' }}
+                />
+                <View className="flex-1 justify-center p-4 gap-1">
+                    <Text className="text-lg font-bold leading-tight text-white truncate">
+                        {event.title}
+                    </Text>
+                    <Text className="text-xs text-gray-400">
+                        {event.date}
+                    </Text>
+                    <View className="flex-row gap-2 mt-3">
+                        <Pressable className="flex-1 flex-row items-center justify-center gap-1 bg-white/5 py-2 rounded-lg">
+                            <MaterialIcons name="edit" size={16} color="#d1d5db" />
+                            <Text className="text-gray-300 font-semibold text-xs">
+                                Sửa
+                            </Text>
+                        </Pressable>
+                        <Pressable className="flex-1 flex-row items-center justify-center gap-1 bg-white/5 py-2 rounded-lg">
+                            <MaterialIcons name="delete" size={16} color="#f87171" />
+                            <Text className="text-red-400 font-semibold text-xs">
+                                Xóa
+                            </Text>
+                        </Pressable>
                     </View>
-                    <View style={styles.budgetItem}>
-                        <Text style={styles.budgetLabel}>Đã chi</Text>
-                        <Text style={[styles.budgetAmount, { color: '#F44336' }]}>{formatCurrency(budget.spent)}</Text>
-                    </View>
-                    <View style={styles.budgetItem}>
-                        <Text style={styles.budgetLabel}>Còn lại</Text>
-                        <Text style={[styles.budgetAmount, { color: '#4CAF50' }]}>{formatCurrency(budget.remaining)}</Text>
-                    </View>
-                </View>
-                <View style={styles.progressBar}>
-                    <View style={[styles.progressFill, { width: `${(budget.spent / budget.total) * 100}%` }]} />
                 </View>
             </View>
-
-            <View style={styles.statsContainer}>
-                <View style={styles.statItem}>
-                    <Text style={styles.statNumber}>{transactions.filter(t => t.type === 'income').length}</Text>
-                    <Text style={styles.statLabel}>Thu nhập</Text>
                 </View>
-                <View style={styles.statItem}>
-                    <Text style={styles.statNumber}>{transactions.filter(t => t.type === 'expense').length}</Text>
-                    <Text style={styles.statLabel}>Chi phí</Text>
-                </View>
-                <View style={styles.statItem}>
-                    <Text style={styles.statNumber}>{transactions.length}</Text>
-                    <Text style={styles.statLabel}>Tổng giao dịch</Text>
-                </View>
-            </View>
+    );
 
-            <View style={styles.filterContainer}>
-                <TouchableOpacity style={styles.filterButton}>
-                    <Text style={styles.filterText}>Tất cả</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.filterButton}>
-                    <Text style={styles.filterText}>Thu nhập</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.filterButton}>
-                    <Text style={styles.filterText}>Chi phí</Text>
-                </TouchableOpacity>
-            </View>
+    // Event Card Renderer
+    const EventCard = ({ event }) => {
+        if (event.isCompact) {
+            return <CompactEventCard event={event} />;
+        }
+        return <FullEventCard event={event} />;
+    };
 
-            <FlatList
-                data={transactions}
-                renderItem={renderTransaction}
-                keyExtractor={(item) => item.id.toString()}
-                contentContainerStyle={styles.listContainer}
-                showsVerticalScrollIndicator={false}
+    // Floating Action Button
+    const FAB = () => (
+        <Pressable
+            className="absolute bottom-6 right-6 w-14 h-14 rounded-full bg-[#0dccf2] items-center justify-center"
+            style={{
+                shadowColor: '#0dccf2',
+                shadowOffset: { width: 0, height: 0 },
+                shadowOpacity: 0.5,
+                shadowRadius: 20,
+                elevation: 10
+            }}
+        >
+            <MaterialIcons name="add" size={32} color="#101f22" />
+        </Pressable>
+    );
+
+    // Bottom Gradient Fade
+    const BottomFade = () => (
+        <>
+            <View
+                style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    left: 0,
+                    width: '100%',
+                    height: 48,
+                    backgroundColor: '#101f22',
+                    opacity: 0.95
+                }}
+                pointerEvents="none"
             />
-        </SafeAreaView>
+            <View
+                style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    left: 0,
+                    width: '100%',
+                    height: 24,
+                    backgroundColor: '#101f22',
+                    opacity: 0.5
+                }}
+                pointerEvents="none"
+            />
+        </>
+    );
+
+    return (
+        <View className="flex-1 bg-[#101f22]">
+            <TopBar />
+            <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+                <SearchBar />
+                <FilterChips />
+                <View className="flex-col gap-5 p-4 pb-24">
+                    {events.map((event) => (
+                        <EventCard key={event.id} event={event} />
+                    ))}
+                </View>
+            </ScrollView>
+            <FAB />
+            <BottomFade />
+        </View>
     );
 };
 
-const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
-    },
-    budgetContainer: {
-        backgroundColor: theme.colors.background,
-        marginHorizontal: wp(4),
-        marginVertical: hp(1),
-        padding: wp(4),
-        borderRadius: theme.radius.md,
-        ...theme.shadows.small,
-    },
-    budgetTitle: {
-        fontSize: hp(1.8),
-        fontWeight: theme.fonts.bold,
-        color: theme.colors.text,
-        marginBottom: hp(2),
-        textAlign: 'center',
-    },
-    budgetStats: {
-        flexDirection: 'row',
-        justifyContent: 'space-around',
-        marginBottom: hp(2),
-    },
-    budgetItem: {
-        alignItems: 'center',
-    },
-    budgetLabel: {
-        fontSize: hp(1.3),
-        color: theme.colors.textSecondary,
-        marginBottom: hp(0.5),
-    },
-    budgetAmount: {
-        fontSize: hp(1.6),
-        fontWeight: theme.fonts.bold,
-        color: theme.colors.text,
-    },
-    progressBar: {
-        height: hp(0.8),
-        backgroundColor: theme.colors.backgroundSecondary,
-        borderRadius: theme.radius.sm,
-        overflow: 'hidden',
-    },
-    progressFill: {
-        height: '100%',
-        backgroundColor: theme.colors.primary,
-    },
-    statsContainer: {
-        flexDirection: 'row',
-        justifyContent: 'space-around',
-        backgroundColor: theme.colors.background,
-        paddingVertical: hp(2),
-        marginHorizontal: wp(4),
-        marginBottom: hp(1),
-        borderRadius: theme.radius.md,
-        ...theme.shadows.small,
-    },
-    statItem: {
-        alignItems: 'center',
-    },
-    statNumber: {
-        fontSize: hp(2.5),
-        fontWeight: theme.fonts.bold,
-        color: theme.colors.primary,
-    },
-    statLabel: {
-        fontSize: hp(1.4),
-        color: theme.colors.textSecondary,
-        marginTop: hp(0.5),
-    },
-    filterContainer: {
-        flexDirection: 'row',
-        paddingHorizontal: wp(4),
-        marginBottom: hp(1),
-    },
-    filterButton: {
-        paddingHorizontal: wp(3),
-        paddingVertical: hp(1),
-        backgroundColor: theme.colors.background,
-        borderRadius: theme.radius.full,
-        marginRight: wp(2),
-        ...theme.shadows.small,
-    },
-    filterText: {
-        fontSize: hp(1.4),
-        color: theme.colors.text,
-        fontWeight: theme.fonts.medium,
-    },
-    listContainer: {
-        paddingHorizontal: wp(4),
-        paddingBottom: hp(10),
-    },
-    transactionCard: {
-        backgroundColor: theme.colors.background,
-        borderRadius: theme.radius.md,
-        padding: wp(4),
-        marginBottom: hp(1.5),
-        ...theme.shadows.small,
-    },
-    transactionHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: hp(1),
-    },
-    transactionInfo: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flex: 1,
-    },
-    transactionIcon: {
-        width: hp(4),
-        height: hp(4),
-        backgroundColor: theme.colors.backgroundSecondary,
-        borderRadius: theme.radius.full,
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginRight: wp(3),
-    },
-    transactionDetails: {
-        flex: 1,
-    },
-    transactionTitle: {
-        fontSize: hp(1.6),
-        fontWeight: theme.fonts.semiBold,
-        color: theme.colors.text,
-        marginBottom: hp(0.3),
-    },
-    transactionDescription: {
-        fontSize: hp(1.3),
-        color: theme.colors.textSecondary,
-    },
-    transactionAmount: {
-        alignItems: 'flex-end',
-    },
-    amountText: {
-        fontSize: hp(1.6),
-        fontWeight: theme.fonts.bold,
-        marginBottom: hp(0.3),
-    },
-    transactionDate: {
-        fontSize: hp(1.2),
-        color: theme.colors.textSecondary,
-    },
-    transactionFooter: {
-        flexDirection: 'row',
-        justifyContent: 'flex-start',
-    },
-    categoryBadge: {
-        paddingHorizontal: wp(2),
-        paddingVertical: hp(0.5),
-        borderRadius: theme.radius.sm,
-    },
-    categoryText: {
-        fontSize: hp(1.2),
-        color: 'white',
-        fontWeight: theme.fonts.medium,
-    },
-});
-
 export default Finance;
-
-
-
-
-
-

@@ -5,15 +5,12 @@ import { supabase } from "../lib/supabase";
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
-    console.log('AuthProvider rendering...');
     const router = useRouter();
 
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        console.log('AuthProvider useEffect running...');
-
         // Kiểm tra session ban đầu
         const checkSession = async () => {
             try {
@@ -32,7 +29,6 @@ export const AuthProvider = ({ children }) => {
                 }
 
                 if (session?.user) {
-                    console.log('Session found, user:', session.user.email);
                     setUser(session.user);
                 } else {
                     console.log('No session found');
@@ -56,8 +52,6 @@ export const AuthProvider = ({ children }) => {
         // Lắng nghe thay đổi auth state
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
-                console.log('Auth state changed:', event, session?.user?.email);
-
                 if (event === 'SIGNED_OUT' || !session) {
                     console.log('User signed out');
                     setUser(null);

@@ -1,9 +1,19 @@
 import { supabase } from '../lib/supabase';
+import { loadActivitiesCache } from '../utils/cacheHelper';
 
 export const activityService = {
     // Lấy tất cả hoạt động
-    getAllActivities: async () => {
+    getAllActivities: async (userId = null, useCache = true) => {
         try {
+            // Check cache trước nếu có userId
+            if (useCache && userId) {
+                const cached = await loadActivitiesCache(userId);
+                if (cached && cached.data) {
+                    return { success: true, data: cached.data, fromCache: true };
+                }
+            }
+
+            // Fetch từ database
             const { data, error } = await supabase
                 .from('activities')
                 .select(`
@@ -24,8 +34,10 @@ export const activityService = {
                 return { success: false, msg: error.message, data: [] };
             }
 
-            console.log('Activities data from database:', data);
-            return { success: true, data: data || [] };
+            // Removed: Không tự động cache ở đây, chỉ cache khi prefetch
+            // Cache chỉ được tạo trong prefetchService.js
+
+            return { success: true, data: data || [], fromCache: false };
         } catch (error) {
             console.log('Error in getAllActivities:', error);
             return { success: false, msg: error.message, data: [] };

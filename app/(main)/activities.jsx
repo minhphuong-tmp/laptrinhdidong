@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
     FlatList,
     Image,
-    SafeAreaView,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -11,10 +10,13 @@ import {
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { activityService } from '../../services/activityService';
+import { loadActivitiesCache } from '../../utils/cacheHelper';
 
 const Activities = () => {
+    const { user } = useAuth();
     // State cho hoạt động từ database
     const [activities, setActivities] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -24,13 +26,33 @@ const Activities = () => {
         loadActivities();
     }, []);
 
-    const loadActivities = async () => {
+    const loadActivities = async (useCache = true) => {
         try {
             setLoading(true);
-            const result = await activityService.getAllActivities();
+            // Load từ cache trước (nếu có)
+            let fromCache = false;
+            if (useCache && user?.id) {
+                const cacheStartTime = Date.now();
+                const cached = await loadActivitiesCache(user.id);
+                if (cached && cached.data && cached.data.length > 0) {
+                    fromCache = true;
+                    const dataSize = JSON.stringify(cached.data).length;
+                    const dataSizeKB = (dataSize / 1024).toFixed(2);
+                    const loadTime = Date.now() - cacheStartTime;
+                    console.log('Load dữ liệu từ cache: activities');
+                    console.log(`- Dữ liệu đã load: ${cached.data.length} activities (${dataSizeKB} KB)`);
+                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                    setActivities(cached.data);
+                    setLoading(false);
+                }
+            }
+
+            if (!fromCache) {
+                console.log('Load dữ liệu từ CSDL: activities');
+            }
+            const result = await activityService.getAllActivities(user?.id);
             if (result.success) {
                 setActivities(result.data);
-                console.log('Loaded activities:', result.data);
             } else {
                 console.log('Error loading activities:', result.msg);
             }
@@ -114,7 +136,7 @@ const Activities = () => {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <Header title="Hoạt động CLB" showBackButton />
 
             <View style={styles.statsContainer}>
@@ -157,15 +179,15 @@ const Activities = () => {
                     showsVerticalScrollIndicator={false}
                 />
             )}
-        </SafeAreaView>
+        </View>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang home và notifications
     },
     statsContainer: {
         flexDirection: 'row',

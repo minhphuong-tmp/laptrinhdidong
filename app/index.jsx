@@ -21,20 +21,14 @@ import React from 'react';
 import { View } from 'react-native';
 
 const index = () => {
-  console.log('Index component rendering...');
   const router = useRouter();
   const { user, loading } = useAuth();
 
   React.useEffect(() => {
-    console.log('Index useEffect running...');
-    console.log('Auth state:', { user: !!user, loading });
-
     if (!loading) {
       if (user) {
-        console.log('User already logged in, navigating to home...');
         router.replace('/(main)/home');
       } else {
-        console.log('No user, navigating to welcome...');
         router.replace('/welcome');
       }
     }

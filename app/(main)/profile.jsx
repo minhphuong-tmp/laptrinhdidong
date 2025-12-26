@@ -34,7 +34,6 @@ const Profile = () => {
 
                     if (data) {
                         setUserInfo(data);
-                        console.log('Profile - user info from DB:', data);
                     }
                 } catch (error) {
                     console.log('Error getting user info:', error);
@@ -88,7 +87,6 @@ const Profile = () => {
             ]
         );
     }
-    console.log('user', user);
 
     return (
         <ScreenWrapper bg="white" >
