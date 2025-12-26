@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
     Alert,
     Animated,
     AppState,
@@ -32,13 +31,9 @@ import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
 
 // --- Services ---
-import { fetchPost } from '../../services/postService';
-import Icon from '../../assets/icons';
-import AppHeader from '../../components/AppHeader';
 import Loading from '../../components/Loading';
-import PostCard from '../../components/PostCard';
-import UserAvatar from '../../components/UserAvatar';
 import { notificationService } from '../../services/notificationService';
+import { fetchPost } from '../../services/postService';
 import { predictionService } from '../../services/predictionService';
 import { prefetchService } from '../../services/prefetchService';
 import { unreadService } from '../../services/unreadService';
@@ -46,7 +41,6 @@ import { getUserData } from '../../services/userService';
 // Sửa lỗi import CallManager (Bỏ ngoặc nhọn nếu là export default, hoặc giữ nguyên nếu là export const)
 // Thường các service viết class sẽ là export default
 import CallManager from '../../services/callManager';
-import * as notificationService from '../../services/notificationService';
 
 var limit = 0;
 
@@ -228,7 +222,6 @@ const Home = () => {
         try {
             const data = await notificationService.getPersonalNotifications(user.id);
             setNotifications(data);
-            const unreadCount = data.length;
 
             // Đếm số thông báo chưa đọc (filter isRead = false)
             const unreadCount = data.filter(notification => !(notification.isRead || notification.is_read)).length;
