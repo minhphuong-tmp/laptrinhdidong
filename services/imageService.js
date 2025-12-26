@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { decode } from 'base64-arraybuffer';
 import { supabaseUrl } from '../constants';
@@ -33,23 +33,13 @@ export const getSupabaseFileUrl = (filePath) => {
             return { uri: filePath };
         }
 
-        // Xử lý các bucket khác nhau cho path
-        if (filePath.includes('postImages/')) {
-            // Ảnh bài viết từ bucket postImages
-            return { uri: `${supabaseUrl}/storage/v1/object/public/postImages/${filePath}` };
-        } else if (filePath.includes('postVideos/')) {
-            // Video bài viết từ bucket postVideos  
-            return { uri: `${supabaseUrl}/storage/v1/object/public/postVideos/${filePath}` };
-        } else if (filePath.includes('documents/')) {
-            // Tài liệu từ bucket documents
-            return { uri: `${supabaseUrl}/storage/v1/object/public/documents/${filePath}` };
-        } else if (filePath.startsWith('upload/')) {
-            // File từ bucket upload
-            return { uri: `${supabaseUrl}/storage/v1/object/public/${filePath}` };
-        } else {
-            // Mặc định là bucket upload
-            return { uri: `${supabaseUrl}/storage/v1/object/public/upload/${filePath}` };
-        }
+        // Tất cả file đều được lưu trong bucket 'upload'
+        // Path có thể là: /postImages/..., /postVideos/..., /documents/..., hoặc path khác
+        // Cần loại bỏ dấu / đầu tiên nếu có để tránh double slash
+        let cleanPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+
+        // Tạo URL với bucket 'upload'
+        return { uri: `${supabaseUrl}/storage/v1/object/public/upload/${cleanPath}` };
     }
     return null;
 };
@@ -58,17 +48,13 @@ export const uploadFile = async (folderName, fileUri, isImage = true) => {
     try {
         let fileName = getFilePath(folderName, isImage);
         const fileBase64 = await FileSystem.readAsStringAsync(fileUri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: 'base64',
         });
         let imageData = decode(fileBase64); // array buffer
 
-        // Xác định bucket dựa trên folderName
-        let bucketName = 'upload'; // mặc định
-        if (folderName === 'postImages' || folderName === 'postVideos') {
-            bucketName = folderName;
-        } else if (folderName === 'documents') {
-            bucketName = 'documents';
-        }
+        // Sử dụng bucket 'upload' (bucket mặc định) cho tất cả
+        // Phân biệt bằng folder path trong fileName
+        let bucketName = 'upload'; // mặc định - bucket này luôn tồn tại
 
         console.log('Uploading to bucket:', bucketName, 'with path:', fileName);
 

@@ -34,6 +34,7 @@ if (typeof global !== 'undefined') {
             userAgent: 'React Native Web',
         };
     }
+
 }
 
 // Export để có thể import

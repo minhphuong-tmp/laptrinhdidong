@@ -10,7 +10,7 @@ import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
-import { createNotification } from '../../services/notificationService';
+import { notificationService } from '../../services/notificationService';
 import { createComment, fetchPostDetails, removeComment, removePost } from '../../services/postService';
 import { getUserData } from '../../services/userService';
 const PostDetails = () => {
@@ -133,13 +133,16 @@ const PostDetails = () => {
                 let notify = {
                     senderId: user.id,
                     receiverId: post.userId,
+                    type: 'comment',
                     title: 'Đã bình luận vào bài viết của bạn',
-                    data: JSON.stringify({
-                        postId: post.id,
-                        commentId: res.data.id
-                    })
+                    postId: post.id,
+                    commentId: res.data.id
                 }
-                createNotification(notify);
+                try {
+                    await notificationService.createNotification(notify);
+                } catch (error) {
+                    console.error('❌ [PostDetails] Error creating notification:', error);
+                }
             }
             commentRef.current = '';
             inputRef.current?.clear();

@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { hp, wp } from '../helpers/common';
 import UserAvatar from './UserAvatar';
 
-const AppHeader = ({ notificationCount, onNotificationPress, showBackButton = false, onMenuPress }) => {
+const AppHeader = ({ notificationCount, unreadMessagesCount = 0, onNotificationPress, showBackButton = false, onMenuPress }) => {
     const router = useRouter();
     const { user } = useAuth();
 
@@ -23,12 +23,18 @@ const AppHeader = ({ notificationCount, onNotificationPress, showBackButton = fa
                     </TouchableOpacity>
                 )}
 
-                <Image
-                    source={require('../assets/images/logokma.jpg')}
-                    style={styles.logoImage}
-                    resizeMode="contain"
-                />
-                <Text style={styles.logo}>KMA</Text>
+                <TouchableOpacity
+                    style={styles.logoContainer}
+                    onPress={() => router.push('home')}
+                    activeOpacity={0.7}
+                >
+                    <Image
+                        source={require('../assets/images/logokma.jpg')}
+                        style={styles.logoImage}
+                        resizeMode="contain"
+                    />
+                    <Text style={styles.logo}>KMA</Text>
+                </TouchableOpacity>
             </View>
 
             <View style={styles.headerRight}>
@@ -49,9 +55,11 @@ const AppHeader = ({ notificationCount, onNotificationPress, showBackButton = fa
                     onPress={() => router.push('chatList')}
                 >
                     <Icon name="chat" size={hp(2.8)} color={theme.colors.text} />
-                    {notificationCount > 0 && (
+                    {unreadMessagesCount > 0 && (
                         <View style={styles.chatNotificationBadge}>
-                            <Icon name="notification-badge" size={hp(1.5)} color="#FF4444" />
+                            <Text style={styles.chatNotificationText}>
+                                {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
+                            </Text>
                         </View>
                     )}
                 </TouchableOpacity>
@@ -97,6 +105,12 @@ const styles = StyleSheet.create({
     backButton: {
         padding: wp(1),
         marginRight: wp(2),
+    },
+
+    logoContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: wp(1),
     },
 
     menuButton: {
@@ -162,8 +176,20 @@ const styles = StyleSheet.create({
 
     chatNotificationBadge: {
         position: 'absolute',
-        top: -hp(0.5),
-        right: -hp(0.5),
+        top: 0,
+        right: 0,
+        backgroundColor: theme.colors.error,
+        borderRadius: theme.radius.full,
+        minWidth: hp(2),
+        height: hp(2),
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: wp(1),
+    },
+    chatNotificationText: {
+        color: 'white',
+        fontSize: hp(1.2),
+        fontWeight: theme.fonts.bold,
     },
 });
 

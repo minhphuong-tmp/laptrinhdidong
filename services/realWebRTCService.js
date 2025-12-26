@@ -18,10 +18,9 @@ try {
     // createLocalTracks = WebRTC.createLocalTracks;
     // isWebRTCAvailable = true;
     // console.log('WebRTC modules loaded successfully');
-    console.log('WebRTC disabled for Expo Go');
     isWebRTCAvailable = false;
 } catch (error) {
-    console.log('WebRTC not available, using mock:', error.message);
+    console.error('WebRTC not available:', error.message);
     isWebRTCAvailable = false;
 }
 
@@ -38,6 +37,7 @@ class RealWebRTCService {
         this.callDuration = 0;
         this.isVideoEnabled = false;
         this.isAudioEnabled = true;
+        this.isEndingCall = false; // Flag to prevent multiple call-ended handling
 
         // Signaling channel
         this.signalingChannel = null;
@@ -65,15 +65,13 @@ class RealWebRTCService {
             this.currentUserId = userId;
 
             if (!isWebRTCAvailable || !RTCPeerConnection) {
-                console.log('WebRTC not available, using mock mode');
-                return { success: true, mock: true };
+                throw new Error('WebRTC not available');
             }
 
             // Setup signaling channel
             this.setupSignalingChannel();
 
-            console.log('Real WebRTC Service initialized for user:', userId);
-            return { success: true, mock: false };
+            return { success: true };
         } catch (error) {
             console.error('WebRTC initialization error:', error);
             return { success: false, error: error.message };
@@ -251,9 +249,7 @@ class RealWebRTCService {
     async getUserMedia() {
         try {
             if (!getUserMedia) {
-                console.log('getUserMedia not available, using mock');
-                this.localStream = { type: 'audio', mock: true };
-                return;
+                throw new Error('getUserMedia not available');
             }
 
             const constraints = {
@@ -274,7 +270,7 @@ class RealWebRTCService {
             });
         } catch (error) {
             console.error('Error getting user media:', error);
-            this.localStream = { type: 'audio', mock: true };
+            throw error;
         }
     }
 
@@ -375,10 +371,69 @@ class RealWebRTCService {
     // Handle call ended
     async handleCallEnded() {
         try {
-            await this.endCall();
-            console.log('Call ended by remote party');
+            // Prevent multiple call-ended handling
+            if (this.isEndingCall) {
+                return;
+            }
+            this.isEndingCall = true;
+
+            // Don't send call-ended signal again (remote party already sent it)
+            this.otherUserId = null; // Clear before cleanup to prevent sending signal
+
+            // Cleanup WebRTC peer connection
+            if (this.peerConnection) {
+                try {
+                    // Close all tracks
+                    if (this.localStream && this.localStream.getTracks) {
+                        this.localStream.getTracks().forEach(track => track.stop());
+                    }
+                    if (this.remoteStream && this.remoteStream.getTracks) {
+                        this.remoteStream.getTracks().forEach(track => track.stop());
+                    }
+                    // Close peer connection
+                    this.peerConnection.close();
+                } catch (webrtcError) {
+                    // Ignore
+                }
+                this.peerConnection = null;
+            }
+
+            // Update call status in database
+            if (this.currentCallId) {
+                try {
+                    await endCall(this.currentCallId, this.callDuration || 0);
+                } catch (e) {
+                    // Ignore
+                }
+            }
+
+            // Cleanup
+            this.localStream = null;
+            // CRITICAL: Dùng logging trước khi clear
+            console.log("🚨 REMOTE STREAM ACTION", {
+                time: new Date().toISOString(),
+                file: "services/realWebRTCService.js",
+                function: "handleCallEnded",
+                action: "CLEAR",
+                reason: "realWebRTCService: handleCallEnded",
+                oldId: this.remoteStream?.id || null,
+                newId: null,
+                callStatus: "ended"
+            });
+            console.trace();
+            this.remoteStream = null;
+            this.isConnected = false;
+            this.currentChannel = null;
+            this.currentCallId = null;
+            this.callDuration = 0;
+
+            this.isEndingCall = false;
         } catch (error) {
-            console.error('Error handling call ended:', error);
+            this.isEndingCall = false;
+            // Only log critical errors
+            if (error.message && !error.message.includes('wrong state')) {
+                console.error('Error handling call ended:', error.message);
+            }
         }
     }
 
@@ -447,34 +502,61 @@ class RealWebRTCService {
     // End call
     async endCall() {
         try {
+            // Prevent multiple endCall calls
+            if (this.isEndingCall) {
+                return { success: true };
+            }
+            this.isEndingCall = true;
+
             // Send call ended signal
             if (this.otherUserId) {
-                await this.sendSignalingData(this.otherUserId, 'call-ended', {});
+                try {
+                    await this.sendSignalingData(this.otherUserId, 'call-ended', {});
+                } catch (e) {
+                    // Ignore signaling errors
+                }
             }
 
             // Close peer connection
             if (this.peerConnection) {
-                this.peerConnection.close();
+                try {
+                    // Close all tracks
+                    if (this.localStream && this.localStream.getTracks) {
+                        this.localStream.getTracks().forEach(track => track.stop());
+                    }
+                    if (this.remoteStream && this.remoteStream.getTracks) {
+                        this.remoteStream.getTracks().forEach(track => track.stop());
+                    }
+                    this.peerConnection.close();
+                } catch (e) {
+                    // Ignore
+                }
                 this.peerConnection = null;
-            }
-
-            // Stop local stream
-            if (this.localStream && this.localStream.getTracks) {
-                this.localStream.getTracks().forEach(track => {
-                    track.stop();
-                });
             }
 
             // Update call status in database
             if (this.currentCallId) {
-                const endResult = await endCall(this.currentCallId, this.callDuration || 0);
-                if (!endResult.success) {
-                    console.log('Failed to update call status:', endResult.msg);
+                try {
+                    await endCall(this.currentCallId, this.callDuration || 0);
+                } catch (e) {
+                    // Ignore
                 }
             }
 
             // Cleanup
             this.localStream = null;
+            // CRITICAL: Dùng logging trước khi clear
+            console.log("🚨 REMOTE STREAM ACTION", {
+                time: new Date().toISOString(),
+                file: "services/realWebRTCService.js",
+                function: "endCall",
+                action: "CLEAR",
+                reason: "realWebRTCService: endCall",
+                oldId: this.remoteStream?.id || null,
+                newId: null,
+                callStatus: "ended"
+            });
+            console.trace();
             this.remoteStream = null;
             this.isConnected = false;
             this.currentChannel = null;
@@ -484,10 +566,19 @@ class RealWebRTCService {
             this.isVideoEnabled = false;
             this.isAudioEnabled = true;
 
-            console.log('Real call ended');
+            // Trigger callback
+            if (this.onCallEnded) {
+                this.onCallEnded();
+            }
+
+            this.isEndingCall = false;
             return { success: true };
         } catch (error) {
-            console.error('End call error:', error);
+            this.isEndingCall = false;
+            // Only log critical errors
+            if (error.message && !error.message.includes('wrong state')) {
+                console.error('End call error:', error.message);
+            }
             return { success: false, error: error.message };
         }
     }
@@ -529,7 +620,6 @@ class RealWebRTCService {
                 this.signalingChannel = null;
             }
 
-            console.log('Real WebRTC Service destroyed');
             return { success: true };
         } catch (error) {
             console.error('Destroy error:', error);

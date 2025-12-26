@@ -1,5 +1,6 @@
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import moment from 'moment';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Alert,
     FlatList,
@@ -15,80 +16,204 @@ import AppHeader from '../../components/AppHeader';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
+import { supabase } from '../../lib/supabase';
+import { notificationService } from '../../services/notificationService';
 
 const Notifications = () => {
     const router = useRouter();
+    const { highlightNotificationId } = useLocalSearchParams();
     const { user } = useAuth();
     const [notifications, setNotifications] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [selectedFilter, setSelectedFilter] = useState('Tất cả');
     const [notificationCount, setNotificationCount] = useState(0);
+    const [highlightedId, setHighlightedId] = useState(null);
+    const flatListRef = useRef(null);
 
     const filters = ['Tất cả', 'Sự kiện', 'Thông báo', 'Nhắc nhở', 'Cập nhật'];
 
-    // Mock data - thay thế bằng API thật sau
-    const mockNotifications = [
-        {
-            id: 1,
-            type: 'event',
-            title: 'Cuộc họp CLB tuần này',
-            content: 'Thông báo cuộc họp CLB vào thứ 7 tuần này lúc 9h sáng tại phòng A101',
-            time: '2 giờ trước',
-            isRead: false,
-            priority: 'high'
-        },
-        {
-            id: 2,
-            type: 'announcement',
-            title: 'Cập nhật quy định CLB',
-            content: 'CLB đã cập nhật một số quy định mới. Vui lòng đọc kỹ và tuân thủ.',
-            time: '1 ngày trước',
-            isRead: true,
-            priority: 'medium'
-        },
-        {
-            id: 3,
-            type: 'reminder',
-            title: 'Nhắc nhở nộp báo cáo',
-            content: 'Các thành viên nhóm dự án A cần nộp báo cáo tiến độ trước ngày 25/12',
-            time: '2 ngày trước',
-            isRead: false,
-            priority: 'high'
-        },
-        {
-            id: 4,
-            type: 'update',
-            title: 'Cập nhật ứng dụng',
-            content: 'Ứng dụng CLB đã được cập nhật phiên bản mới với nhiều tính năng hữu ích',
-            time: '3 ngày trước',
-            isRead: true,
-            priority: 'low'
-        },
-        {
-            id: 5,
-            type: 'event',
-            title: 'Workshop lập trình',
-            content: 'Tham gia workshop "React Native từ cơ bản đến nâng cao" vào chủ nhật tuần sau',
-            time: '4 ngày trước',
-            isRead: false,
-            priority: 'medium'
+    // Helper function để format thời gian
+    const formatTimeAgo = (dateString) => {
+        if (!dateString) return 'Vừa xong';
+        const now = moment();
+        const notificationDate = moment(dateString);
+        const diffInSeconds = now.diff(notificationDate, 'seconds');
+
+        if (diffInSeconds < 60) {
+            return 'Vừa xong';
+        } else if (diffInSeconds < 3600) {
+            const minutes = Math.floor(diffInSeconds / 60);
+            return `${minutes} phút trước`;
+        } else if (diffInSeconds < 86400) {
+            const hours = Math.floor(diffInSeconds / 3600);
+            return `${hours} giờ trước`;
+        } else if (diffInSeconds < 2592000) {
+            const days = Math.floor(diffInSeconds / 86400);
+            return `${days} ngày trước`;
+        } else {
+            const months = Math.floor(diffInSeconds / 2592000);
+            return `${months} tháng trước`;
         }
-    ];
+    };
+
+    // Map type từ database sang UI type
+    const mapTypeToUIType = (dbType) => {
+        switch (dbType) {
+            case 'event_reminder':
+            case 'meeting':
+            case 'workshop':
+            case 'activity':
+                return 'event';
+            case 'club_announcement':
+                return 'announcement';
+            case 'system':
+                return 'update';
+            default:
+                return 'announcement';
+        }
+    };
+
+    // Map type sang priority
+    const getPriorityFromType = (type) => {
+        switch (type) {
+            case 'event_reminder':
+            case 'meeting':
+                return 'high';
+            case 'club_announcement':
+                return 'medium';
+            case 'system':
+            case 'update':
+                return 'low';
+            default:
+                return 'medium';
+        }
+    };
 
     useEffect(() => {
-        loadNotifications();
-    }, []);
+        if (user?.id) {
+            loadNotifications();
+        }
+    }, [user?.id]);
 
-    const loadNotifications = async () => {
+    // Set highlighted notification khi có param
+    useEffect(() => {
+        if (highlightNotificationId) {
+            setHighlightedId(highlightNotificationId);
+            // Set filter về 'Tất cả' để đảm bảo notification hiển thị
+            setSelectedFilter('Tất cả');
+            // Tự động remove highlight sau 3 giây
+            const timer = setTimeout(() => {
+                setHighlightedId(null);
+            }, 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [highlightNotificationId]);
+
+    // Scroll đến highlighted notification khi load xong
+    useEffect(() => {
+        if (highlightedId && notifications.length > 0 && flatListRef.current && !loading) {
+            // Đợi một chút để FlatList render xong
+            setTimeout(() => {
+                const filteredNotifications = getFilteredNotifications();
+                const index = filteredNotifications.findIndex(n => String(n.id) === String(highlightedId));
+
+                if (index !== -1) {
+                    try {
+                        flatListRef.current?.scrollToIndex({
+                            index: index,
+                            animated: true,
+                            viewPosition: 0.5
+                        });
+                    } catch (error) {
+                        console.log('Error scrolling to highlighted notification:', error);
+                        // Fallback: scroll to offset
+                        setTimeout(() => {
+                            flatListRef.current?.scrollToOffset({
+                                offset: index * 100, // Estimate item height
+                                animated: true,
+                            });
+                        }, 100);
+                    }
+                }
+            }, 800);
+        }
+    }, [highlightedId, notifications.length, loading, selectedFilter]);
+
+    const loadNotifications = async (useCache = true) => {
         try {
             setLoading(true);
-            // TODO: Thay thế bằng API thật
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            setNotifications(mockNotifications);
+            if (!user?.id) {
+                console.log('No user ID available');
+                return;
+            }
+
+            // Load từ cache trước (nếu có)
+            let fromCache = false;
+            if (useCache) {
+                const { loadClubNotificationsCache } = require('../../utils/cacheHelper');
+                const cacheStartTime = Date.now();
+                const cached = await loadClubNotificationsCache(user.id);
+                if (cached && cached.data && cached.data.length > 0) {
+                    fromCache = true;
+                    const dataSize = JSON.stringify(cached.data).length;
+                    const dataSizeKB = (dataSize / 1024).toFixed(2);
+                    const loadTime = Date.now() - cacheStartTime;
+                    console.log('Load dữ liệu từ cache: notifications (CLB)');
+                    console.log(`- Dữ liệu đã load: ${cached.data.length} notifications (${dataSizeKB} KB)`);
+                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                    // Transform và hiển thị ngay
+                    const transformedData = cached.data.map(notification => {
+                        const dbType = notification.type;
+                        const uiType = mapTypeToUIType(dbType);
+                        const priority = getPriorityFromType(dbType);
+                        return {
+                            id: notification.id,
+                            type: uiType,
+                            title: notification.title || 'Thông báo CLB',
+                            content: notification.content || notification.message || 'Không có nội dung',
+                            time: formatTimeAgo(notification.created_at || notification.createdAt),
+                            isRead: notification.isRead || notification.is_read || false,
+                            priority: priority,
+                            originalType: dbType,
+                            sender: notification.sender || null
+                        };
+                    });
+                    setNotifications(transformedData);
+                    setLoading(false);
+                }
+            }
+
+            if (!fromCache) {
+                console.log('Load dữ liệu từ CSDL: notifications (CLB)');
+            }
+            // Lấy thông báo CLB từ database
+            const data = await notificationService.getClubNotifications(user.id, false);
+
+            // Transform data để phù hợp với UI
+            const transformedData = data.map(notification => {
+                // Xử lý cả camelCase và snake_case
+                const dbType = notification.type;
+                const uiType = mapTypeToUIType(dbType);
+                const priority = getPriorityFromType(dbType);
+
+                return {
+                    id: notification.id,
+                    type: uiType,
+                    title: notification.title || 'Thông báo CLB',
+                    content: notification.content || notification.message || 'Không có nội dung',
+                    time: formatTimeAgo(notification.created_at || notification.createdAt),
+                    isRead: notification.isRead || notification.is_read || false,
+                    priority: priority,
+                    originalType: dbType,
+                    sender: notification.sender || null
+                };
+            });
+
+            setNotifications(transformedData);
         } catch (error) {
             console.error('Error loading notifications:', error);
-            Alert.alert('Lỗi', 'Không thể tải thông báo');
+            Alert.alert('Lỗi', 'Không thể tải thông báo CLB');
         } finally {
             setLoading(false);
         }
@@ -152,73 +277,170 @@ const Notifications = () => {
         }
     };
 
-    const markAsRead = (notificationId) => {
-        setNotifications(prev =>
-            prev.map(notification =>
-                notification.id === notificationId
-                    ? { ...notification, isRead: true }
-                    : notification
-            )
-        );
+    const markAsRead = async (notificationId) => {
+        if (!user?.id) return;
+
+        try {
+            // Mark as read trong database
+            const result = await notificationService.markClubNotificationAsRead(notificationId, user.id);
+
+            if (!result.success) {
+                console.log('Failed to mark club notification as read:', result.message);
+            }
+
+            // Update local state
+            setNotifications(prev =>
+                prev.map(notification =>
+                    notification.id === notificationId
+                        ? { ...notification, isRead: true }
+                        : notification
+                )
+            );
+        } catch (error) {
+            console.error('Error marking notification as read:', error);
+            // Vẫn update UI local state
+            setNotifications(prev =>
+                prev.map(notification =>
+                    notification.id === notificationId
+                        ? { ...notification, isRead: true }
+                        : notification
+                )
+            );
+        }
     };
 
-    const markAllAsRead = () => {
-        setNotifications(prev =>
-            prev.map(notification => ({ ...notification, isRead: true }))
-        );
+    const markAllAsRead = async () => {
+        if (!user?.id) return;
+
+        try {
+            // Mark tất cả unread notifications
+            const unreadNotifications = notifications.filter(n => !n.isRead);
+
+            await Promise.all(
+                unreadNotifications.map(n =>
+                    notificationService.markClubNotificationAsRead(n.id, user.id)
+                )
+            );
+
+            // Update local state
+            setNotifications(prev =>
+                prev.map(notification => ({ ...notification, isRead: true }))
+            );
+        } catch (error) {
+            console.error('Error marking all notifications as read:', error);
+            // Vẫn update UI local state
+            setNotifications(prev =>
+                prev.map(notification => ({ ...notification, isRead: true }))
+            );
+        }
     };
 
-    const renderNotification = ({ item }) => (
-        <TouchableOpacity
-            style={[
-                styles.notificationCard,
-                !item.isRead && styles.unreadCard
-            ]}
-            onPress={() => markAsRead(item.id)}
-        >
-            <View style={styles.notificationHeader}>
-                <View style={styles.notificationIconContainer}>
-                    <Icon
-                        name={getNotificationIcon(item.type)}
-                        size={hp(2.5)}
-                        color={getPriorityColor(item.priority)}
-                    />
-                </View>
-                <View style={styles.notificationContent}>
-                    <View style={styles.notificationTitleRow}>
-                        <Text style={[
-                            styles.notificationTitle,
-                            !item.isRead && styles.unreadTitle
-                        ]}>
-                            {item.title}
-                        </Text>
-                        {!item.isRead && <View style={styles.unreadDot} />}
+    const renderNotification = ({ item }) => {
+        const isHighlighted = highlightedId && String(item.id) === String(highlightedId);
+
+        return (
+            <TouchableOpacity
+                style={[
+                    styles.notificationCard,
+                    !item.isRead && styles.unreadCard,
+                    isHighlighted && styles.highlightedCard
+                ]}
+                onPress={() => markAsRead(item.id)}
+            >
+                <View style={styles.notificationHeader}>
+                    <View style={styles.notificationIconContainer}>
+                        <Icon
+                            name={getNotificationIcon(item.type)}
+                            size={hp(2.5)}
+                            color={getPriorityColor(item.priority)}
+                        />
                     </View>
-                    <Text style={styles.notificationText} numberOfLines={2}>
-                        {item.content}
-                    </Text>
-                    <Text style={styles.notificationTime}>
-                        {item.time}
-                    </Text>
+                    <View style={styles.notificationContent}>
+                        <View style={styles.notificationTitleRow}>
+                            <Text style={[
+                                styles.notificationTitle,
+                                !item.isRead && styles.unreadTitle
+                            ]}>
+                                {item.title}
+                            </Text>
+                            {!item.isRead && <View style={styles.unreadDot} />}
+                        </View>
+                        <Text style={styles.notificationText} numberOfLines={2}>
+                            {item.content}
+                        </Text>
+                        <Text style={styles.notificationTime}>
+                            {item.time}
+                        </Text>
+                    </View>
                 </View>
-            </View>
-        </TouchableOpacity>
-    );
+            </TouchableOpacity>
+        );
+    };
 
     const filteredNotifications = getFilteredNotifications();
+    // Đếm số thông báo CLB chưa đọc (cho phần statistics)
     const unreadCount = notifications.filter(n => !n.isRead).length;
 
-    // Update notification count for header
+    // Load personal notifications count for header (giống như trang home)
+    const loadPersonalNotificationCount = async () => {
+        if (!user?.id) return;
+
+        try {
+            const data = await notificationService.getPersonalNotifications(user.id);
+            // Đếm số thông báo chưa đọc (filter isRead = false)
+            const unreadCount = data.filter(notification => !(notification.isRead || notification.is_read)).length;
+            setNotificationCount(unreadCount);
+        } catch (error) {
+            console.log('Error loading personal notification count:', error);
+            setNotificationCount(0);
+        }
+    };
+
     useEffect(() => {
-        setNotificationCount(unreadCount);
-    }, [unreadCount]);
+        if (!user?.id) return;
+
+        // Load initial count
+        loadPersonalNotificationCount();
+
+        // Setup realtime subscription để cập nhật count khi có thay đổi
+        const notificationChannel = supabase
+            .channel(`notifications-count-${user.id}`)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiverId=eq.${user.id}`
+            }, (payload) => {
+                console.log('🔔 [Notifications] New notification received (realtime):', payload);
+                // Reload count khi có notification mới
+                loadPersonalNotificationCount();
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'notifications',
+                filter: `receiverId=eq.${user.id}`
+            }, (payload) => {
+                console.log('🔔 [Notifications] Notification updated (realtime):', payload);
+                // Reload count khi có notification được update (mark as read)
+                loadPersonalNotificationCount();
+            })
+            .subscribe((status) => {
+                console.log('🔔 [Notifications] Notification channel status:', status);
+            });
+
+        return () => {
+            console.log('🔔 [Notifications] Cleaning up notification subscription');
+            notificationChannel.unsubscribe();
+        };
+    }, [user?.id]);
 
     return (
         <View style={styles.container}>
             {/* App Header */}
             <AppHeader
                 notificationCount={notificationCount}
-                showBackButton={false}
+                onNotificationPress={() => router.push('personalNotifications')}
                 onMenuPress={() => router.back()}
             />
 
@@ -288,6 +510,7 @@ const Notifications = () => {
                     </View>
                 ) : (
                     <FlatList
+                        ref={flatListRef}
                         data={filteredNotifications}
                         renderItem={renderNotification}
                         keyExtractor={(item) => item.id.toString()}
@@ -301,6 +524,16 @@ const Notifications = () => {
                             />
                         }
                         contentContainerStyle={styles.notificationsList}
+                        onScrollToIndexFailed={(info) => {
+                            console.log('Scroll to index failed:', info);
+                            // Fallback: scroll to offset
+                            setTimeout(() => {
+                                flatListRef.current?.scrollToOffset({
+                                    offset: info.averageItemLength * info.index,
+                                    animated: true,
+                                });
+                            }, 100);
+                        }}
                     />
                 )}
             </View>
@@ -454,6 +687,12 @@ const styles = StyleSheet.create({
     unreadCard: {
         borderLeftWidth: 4,
         borderLeftColor: theme.colors.primary,
+    },
+    highlightedCard: {
+        backgroundColor: '#FFF9E6',
+        borderWidth: 2,
+        borderColor: theme.colors.primary,
+        ...theme.shadows.medium,
     },
     notificationHeader: {
         flexDirection: 'row',

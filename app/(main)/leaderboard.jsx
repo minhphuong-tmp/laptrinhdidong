@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
     FlatList,
     Image,
-    SafeAreaView,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -11,11 +10,14 @@ import {
 import Header from '../../components/Header';
 import { supabaseUrl } from '../../constants';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
+import { loadLeaderboardCache } from '../../utils/cacheHelper';
 
 const Leaderboard = () => {
+    const { user } = useAuth();
     // MOCK DATA - Bảng xếp hạng
-    const [leaderboard] = useState([
+    const [leaderboard, setLeaderboard] = useState([
         {
             id: 1,
             name: 'Nguyễn Văn A',
@@ -98,6 +100,29 @@ const Leaderboard = () => {
         }
     ]);
 
+    useEffect(() => {
+        loadLeaderboard();
+    }, []);
+
+    const loadLeaderboard = async (useCache = true) => {
+        // Load từ cache trước (nếu có)
+        if (useCache && user?.id) {
+            const cacheStartTime = Date.now();
+            const cached = await loadLeaderboardCache(user.id);
+            if (cached && cached.data && cached.data.length > 0) {
+                const dataSize = JSON.stringify(cached.data).length;
+                const dataSizeKB = (dataSize / 1024).toFixed(2);
+                const loadTime = Date.now() - cacheStartTime;
+                console.log('Load dữ liệu từ cache: leaderboard');
+                console.log(`- Dữ liệu đã load: ${cached.data.length} items (${dataSizeKB} KB)`);
+                console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                setLeaderboard(cached.data);
+                return;
+            }
+        }
+        console.log('Load dữ liệu từ CSDL: leaderboard (demo data)');
+    };
+
     const getBadgeColor = (badge) => {
         switch (badge) {
             case 'Gold': return '#FFD700';
@@ -139,7 +164,7 @@ const Leaderboard = () => {
     );
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <Header title="Bảng xếp hạng" showBackButton />
 
             <View style={styles.statsContainer}>
@@ -176,15 +201,15 @@ const Leaderboard = () => {
                 contentContainerStyle={styles.listContainer}
                 showsVerticalScrollIndicator={false}
             />
-        </SafeAreaView>
+        </View>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang home và notifications
     },
     statsContainer: {
         flexDirection: 'row',

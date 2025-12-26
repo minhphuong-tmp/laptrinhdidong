@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
     Alert,
     Linking,
-    SafeAreaView,
     StyleSheet,
     Text,
     TextInput,
@@ -12,13 +11,16 @@ import {
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
+import { loadContactCache } from '../../utils/cacheHelper';
 
 const Contact = () => {
+    const { user } = useAuth();
     const [message, setMessage] = useState('');
 
     // MOCK DATA - Thông tin liên hệ
-    const contactInfo = [
+    const [contactInfo, setContactInfo] = useState([
         {
             id: 1,
             type: 'phone',
@@ -47,7 +49,30 @@ const Contact = () => {
             value: 'KMA Club Official',
             action: 'facebook'
         }
-    ];
+    ]);
+
+    useEffect(() => {
+        loadContact();
+    }, []);
+
+    const loadContact = async (useCache = true) => {
+        // Load từ cache trước (nếu có)
+        if (useCache && user?.id) {
+            const cacheStartTime = Date.now();
+            const cached = await loadContactCache(user.id);
+            if (cached && cached.data && cached.data.length > 0) {
+                const dataSize = JSON.stringify(cached.data).length;
+                const dataSizeKB = (dataSize / 1024).toFixed(2);
+                const loadTime = Date.now() - cacheStartTime;
+                console.log('Load dữ liệu từ cache: contact');
+                console.log(`- Dữ liệu đã load: ${cached.data.length} items (${dataSizeKB} KB)`);
+                console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                setContactInfo(cached.data);
+                return;
+            }
+        }
+        console.log('Load dữ liệu từ CSDL: contact (demo data)');
+    };
 
     const handleContact = async (item) => {
         try {
@@ -98,7 +123,7 @@ const Contact = () => {
     );
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <Header title="Liên hệ và hỗ trợ" showBackButton />
 
             <View style={styles.section}>
@@ -162,15 +187,15 @@ const Contact = () => {
                     </View>
                 </View>
             </View>
-        </SafeAreaView>
+        </View>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang home và notifications
     },
     section: {
         backgroundColor: theme.colors.background,

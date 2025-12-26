@@ -1,7 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
 import {
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
@@ -11,10 +10,13 @@ import {
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { activityService } from '../../services/activityService';
+import { loadEventsCache } from '../../utils/cacheHelper';
 
 const Events = () => {
+    const { user } = useAuth();
     // State cho sự kiện từ database
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -24,10 +26,51 @@ const Events = () => {
         loadEvents();
     }, []);
 
-    const loadEvents = async () => {
+    const loadEvents = async (useCache = true) => {
         try {
             setLoading(true);
-            const result = await activityService.getAllActivities();
+            // Load từ cache trước (nếu có)
+            let fromCache = false;
+            if (useCache && user?.id) {
+                const cacheStartTime = Date.now();
+                const cached = await loadEventsCache(user.id);
+                if (cached && cached.data && cached.data.length > 0) {
+                    fromCache = true;
+                    const dataSize = JSON.stringify(cached.data).length;
+                    const dataSizeKB = (dataSize / 1024).toFixed(2);
+                    const loadTime = Date.now() - cacheStartTime;
+                    console.log('Load dữ liệu từ cache: events');
+                    console.log(`- Dữ liệu đã load: ${cached.data.length} events (${dataSizeKB} KB)`);
+                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                    const transformedEvents = cached.data.map(activity => {
+                        const startDate = new Date(activity.start_date);
+                        const endDate = new Date(activity.end_date);
+                        const now = new Date();
+                        const isUpcoming = startDate > now;
+                        const isCompleted = endDate < now;
+                        const status = isCompleted ? 'completed' : (isUpcoming ? 'upcoming' : 'ongoing');
+                        return {
+                            id: activity.id,
+                            title: activity.title,
+                            date: startDate.toISOString().split('T')[0],
+                            time: `${startDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`,
+                            location: activity.location,
+                            description: activity.description,
+                            participants: activity.participants?.length || 0,
+                            maxParticipants: activity.max_participants,
+                            status: status,
+                            type: activity.activity_type
+                        };
+                    });
+                    setEvents(transformedEvents);
+                    setLoading(false);
+                }
+            }
+
+            if (!fromCache) {
+                console.log('Load dữ liệu từ CSDL: events');
+            }
+            const result = await activityService.getAllActivities(user?.id, false);
             if (result.success) {
                 // Transform data từ activities sang events format
                 const transformedEvents = result.data.map(activity => {
@@ -321,7 +364,7 @@ const Events = () => {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <StatusBar style="dark" />
             <Header title="Lịch sự kiện" showBackButton />
 
@@ -375,15 +418,15 @@ const Events = () => {
                     )}
                 </View>
             </ScrollView>
-        </SafeAreaView>
+        </View>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang home và notifications
     },
     scrollContainer: {
         flex: 1,

@@ -1,9 +1,9 @@
+import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
     Linking,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
@@ -15,10 +15,14 @@ import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { supabaseUrl } from '../../constants';
 import { theme } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { documentService } from '../../services/documentService';
+import { loadDocumentsCache } from '../../utils/cacheHelper';
 
 const Documents = () => {
+    const { user } = useAuth();
+    const router = useRouter();
     // State cho dữ liệu từ database
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -35,10 +39,34 @@ const Documents = () => {
         loadDocuments();
     }, []);
 
-    const loadDocuments = async () => {
+    const loadDocuments = async (useCache = true) => {
         setLoading(true);
         try {
-            const result = await documentService.getAllDocuments();
+            // Load từ cache trước (nếu có)
+            let fromCache = false;
+            if (useCache && user?.id) {
+                const cacheStartTime = Date.now();
+                const cached = await loadDocumentsCache(user.id);
+                if (cached && cached.data && cached.data.length > 0) {
+                    fromCache = true;
+                    const dataSize = JSON.stringify(cached.data).length;
+                    const dataSizeKB = (dataSize / 1024).toFixed(2);
+                    const loadTime = Date.now() - cacheStartTime;
+                    console.log('Load dữ liệu từ cache: documents');
+                    console.log(`- Dữ liệu đã load: ${cached.data.length} documents (${dataSizeKB} KB)`);
+                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
+                    // Có cache, hiển thị ngay
+                    setDocuments(cached.data);
+                    setFilteredDocuments(cached.data);
+                    setLoading(false);
+                    // Fetch fresh data ở background
+                }
+            }
+
+            if (!fromCache) {
+                console.log('💾 Load dữ liệu từ CSDL: documents');
+            }
+            const result = await documentService.getAllDocuments(user?.id, false);
             if (result.success) {
                 setDocuments(result.data);
                 setFilteredDocuments(result.data);
@@ -114,18 +142,7 @@ const Documents = () => {
     };
 
     const handleUploadDocument = () => {
-        Alert.alert(
-            'Tải lên tài liệu',
-            'Chức năng tải lên tài liệu đang được phát triển. Bạn có thể liên hệ admin để tải lên tài liệu.',
-            [
-                { text: 'Hủy', style: 'cancel' },
-                {
-                    text: 'Liên hệ admin', onPress: () => {
-                        Alert.alert('Thông báo', 'Đã gửi yêu cầu tải lên tài liệu cho admin!');
-                    }
-                }
-            ]
-        );
+        router.push('/(main)/UploadDocument');
     };
 
     const getFileIcon = (type) => {
@@ -158,8 +175,8 @@ const Documents = () => {
         }
     };
 
-    const renderDocument = ({ item }) => (
-        <TouchableOpacity style={styles.documentCard}>
+    const renderDocument = ({ item, index }) => (
+        <View style={styles.documentCard}>
             <View style={styles.documentHeader}>
                 <View style={styles.fileIcon}>
                     <Icon name={getFileIcon(item.type)} size={hp(2.5)} color={getFileColor(item.type)} />
@@ -201,23 +218,23 @@ const Documents = () => {
                     </View>
                 </View>
             </View>
-        </TouchableOpacity>
+        </View>
     );
 
     if (loading) {
         return (
-            <SafeAreaView style={styles.container}>
+            <View style={styles.container}>
                 <Header title="Tài liệu CLB" showBackButton />
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color={theme.colors.primary} />
                     <Text style={styles.loadingText}>Đang tải dữ liệu...</Text>
                 </View>
-            </SafeAreaView>
+            </View>
         );
     }
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <Header title="Tài liệu CLB" showBackButton />
 
             <ScrollView
@@ -289,22 +306,22 @@ const Documents = () => {
 
                 {/* Documents List */}
                 <View style={styles.documentsListContainer}>
-                    {filteredDocuments.map((document) => (
+                    {filteredDocuments.map((document, index) => (
                         <View key={document.id}>
-                            {renderDocument({ item: document })}
+                            {renderDocument({ item: document, index })}
                         </View>
                     ))}
                 </View>
             </ScrollView>
-        </SafeAreaView>
+        </View>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.backgroundSecondary,
-        paddingTop: 35, // Consistent padding top
+        backgroundColor: theme.colors.background,
+        paddingTop: 35, // Giống trang home và notifications
     },
 
     loadingContainer: {
