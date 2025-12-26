@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Image,
+    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
@@ -12,13 +13,10 @@ import {
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { theme } from '../../constants/theme';
-import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { clubMemberService } from '../../services/clubMemberService';
-import { loadMembersCache } from '../../utils/cacheHelper';
 
 const Members = () => {
-    const { user } = useAuth();
     // State cho dữ liệu từ database
     const [members, setMembers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -34,38 +32,24 @@ const Members = () => {
         loadMembers();
     }, []);
 
-    const loadMembers = async (useCache = true) => {
+    const loadMembers = async () => {
         setLoading(true);
         try {
-            // Load từ cache trước (nếu có)
-            let fromCache = false;
-            if (useCache && user?.id) {
-                const cacheStartTime = Date.now();
-                const cached = await loadMembersCache(user.id);
-                if (cached && cached.data && cached.data.length > 0) {
-                    fromCache = true;
-                    const dataSize = JSON.stringify(cached.data).length;
-                    const dataSizeKB = (dataSize / 1024).toFixed(2);
-                    const loadTime = Date.now() - cacheStartTime;
-                    console.log('Load dữ liệu từ cache: members');
-                    console.log(`- Dữ liệu đã load: ${cached.data.length} members (${dataSizeKB} KB)`);
-                    console.log(`- Tổng thời gian load: ${loadTime} ms`);
-                    setMembers(cached.data);
-                    setFilteredMembers(cached.data);
-                    setLoading(false);
-                }
-            }
+            // Debug: Kiểm tra users table trước
+            console.log('=== DEBUG USERS TABLE ===');
+            await clubMemberService.debugUsers();
 
-            if (!fromCache) {
-                console.log('Load dữ liệu từ CSDL: members');
-            }
-            const result = await clubMemberService.getAllMembers(user?.id);
+            const result = await clubMemberService.getAllMembers();
+            console.log('Members result:', result);
             if (result.success) {
+                console.log('Members data:', result.data);
                 setMembers(result.data);
                 setFilteredMembers(result.data);
+            } else {
+                console.error('Error loading members:', result.msg);
             }
         } catch (error) {
-            // Silent error handling
+            console.error('Error loading members:', error);
         } finally {
             setLoading(false);
         }
@@ -170,8 +154,10 @@ const Members = () => {
                         style={styles.avatar}
                         onError={(error) => {
 
+                            console.log('Failed URL:', item.avatar);
                         }}
                         onLoad={() => {
+                            console.log('Image loaded successfully for', item.name, ':', item.avatar);
                         }}
                     />
                     <View style={[styles.statusDot, { backgroundColor: item.status === 'online' ? '#4CAF50' : '#9E9E9E' }]} />
@@ -228,18 +214,18 @@ const Members = () => {
 
     if (loading) {
         return (
-            <View style={styles.container}>
+            <SafeAreaView style={styles.container}>
                 <Header title="Thành viên CLB" showBackButton />
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color={theme.colors.primary} />
                     <Text style={styles.loadingText}>Đang tải dữ liệu...</Text>
                 </View>
-            </View>
+            </SafeAreaView>
         );
     }
 
     return (
-        <View style={styles.container}>
+        <SafeAreaView style={styles.container}>
             <Header title="Thành viên CLB" showBackButton />
 
             <ScrollView
@@ -371,15 +357,15 @@ const Members = () => {
                     ))}
                 </View>
             </ScrollView>
-        </View>
+        </SafeAreaView>
     );
 };
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.background,
-        paddingTop: 35, // Giống trang home và notifications
+        backgroundColor: theme.colors.backgroundSecondary,
+        paddingTop: 35, // Consistent padding top
     },
 
     loadingContainer: {

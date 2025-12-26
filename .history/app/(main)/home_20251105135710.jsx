@@ -2,10 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
     Animated,
-    AppState,
     FlatList,
     Modal,
     Pressable,
@@ -17,85 +14,34 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
-
-// --- Components ---
-import Icon from '../../assets/icons'; // Kiểm tra lại đường dẫn nếu file icon của bạn ở chỗ khác
-import AppHeader from '../../components/AppHeader';
 import IncomingCallModal from '../../components/IncomingCallModal';
-import PostCard from '../../components/PostCard';
-import UserAvatar from '../../components/UserAvatar';
-
-// --- Config & Helpers ---
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { supabase } from '../../lib/supabase';
-
-// --- Services ---
+import CallManager from '../../services/callManager';
 import { fetchPost } from '../../services/postService';
+
 import Icon from '../../assets/icons';
 import AppHeader from '../../components/AppHeader';
 import Loading from '../../components/Loading';
 import PostCard from '../../components/PostCard';
 import UserAvatar from '../../components/UserAvatar';
 import { notificationService } from '../../services/notificationService';
-import { predictionService } from '../../services/predictionService';
-import { prefetchService } from '../../services/prefetchService';
-import { unreadService } from '../../services/unreadService';
 import { getUserData } from '../../services/userService';
-// Sửa lỗi import CallManager (Bỏ ngoặc nhọn nếu là export default, hoặc giữ nguyên nếu là export const)
-// Thường các service viết class sẽ là export default
-import CallManager from '../../services/callManager';
-import * as notificationService from '../../services/notificationService';
-
 var limit = 0;
-
 const Home = () => {
     const { user, setAuth } = useAuth();
     const router = useRouter();
 
-    // Lấy tên từ user_metadata hoặc database
-    const [userInfo, setUserInfo] = useState(null);
-
-    // Fetch user info from database
-    useEffect(() => {
-        const fetchUserInfo = async () => {
-            if (user?.id) {
-                try {
-                    const { data, error } = await supabase
-                        .from('users')
-                        .select('name, email, image')
-                        .eq('id', user.id)
-                        .single();
-
-                    if (!error && data) {
-                        setUserInfo(data);
-                    }
-                } catch (error) {
-                    console.log('Error fetching user info:', error);
-                }
-            }
-        };
-
-        fetchUserInfo();
-    }, [user?.id]);
-
-    // Lấy tên từ database, user_metadata, hoặc user object
-    const userName = userInfo?.name || user?.user_metadata?.name || user?.name || 'User';
+    // Lấy tên từ user_metadata
+    const userName = user?.user_metadata?.name || user?.name || 'Unknown User';
 
     // States
     const [hasMore, setHasMore] = useState(true);
     const [notificationCount, setNotificationCount] = useState(0);
-    const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
     const [scrollToPostId, setScrollToPostId] = useState(null);
     const [posts, setPosts] = useState([]);
-    const behaviorLoggedRef = useRef(false); // Track đã log behavior chưa
-    const appStateRef = useRef(AppState.currentState); // Track app state
-    const isAppRestartRef = useRef(false); // Track nếu app vừa được mở lại
-    const hasPrefetchedRef = useRef(false); // Track đã prefetch chưa (chỉ prefetch 1 lần trong session)
-    const hasPrefetchedCheckedRef = useRef(false); // Track đã check AsyncStorage chưa
-    const shouldPrefetchRef = useRef(false); // Flag để trigger prefetch khi app quay lại
-    const cacheClearedOnMountRef = useRef(false); // Track đã xóa cache khi mount chưa
     const flatListRef = useRef(null);
     const [comment, setComment] = useState(0);
     const [showMenu, setShowMenu] = useState(false);
@@ -130,6 +76,7 @@ const Home = () => {
             if (error) {
                 Alert.alert('Lỗi', 'Không thể đăng xuất. Vui lòng thử lại.');
             }
+            // Không cần setAuth(null) vì AuthContext sẽ tự động handle
         } catch (error) {
             console.log('Logout error:', error);
             Alert.alert('Lỗi', 'Có lỗi xảy ra khi đăng xuất');
@@ -137,6 +84,7 @@ const Home = () => {
     }
 
     const handleCreatePost = async () => {
+        // Chỉ chuyển hướng sang trang tạo bài viết
         router.push('newPost');
     };
 
@@ -205,138 +153,68 @@ const Home = () => {
     };
 
     const handleNewNotification = async (payload) => {
+        console.log('got new notification', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
-            // Chỉ cập nhật unread count, KHÔNG động vào cache
-            // Cache sẽ được cập nhật khi vào màn hình PersonalNotifications
             setNotificationCount(prevCount => prevCount + 1);
+            // Reload notifications để có dữ liệu mới nhất
             loadNotifications();
         }
-    }
 
-    const handleNotificationUpdate = async (payload) => {
-        // Khi notification được update (thường là is_read thay đổi), reload để update count
-        if (payload.eventType === 'UPDATE' && payload.new?.id) {
-            // Reload notifications để cập nhật count chính xác
-            loadNotifications();
-        }
     }
 
     // Load notifications từ database
     const loadNotifications = async () => {
-        if (!user?.id) return 0;
+        if (!user?.id) return;
 
         try {
             const data = await notificationService.getPersonalNotifications(user.id);
             setNotifications(data);
-            const unreadCount = data.length;
 
-            // Đếm số thông báo chưa đọc (filter isRead = false)
-            const unreadCount = data.filter(notification => !(notification.isRead || notification.is_read)).length;
+            // Đếm số thông báo chưa đọc (mặc định tất cả đều chưa đọc vì không có trường is_read)
+            // TODO: Khi có trường is_read, thay đổi logic này
+            const unreadCount = data.length;
             setNotificationCount(unreadCount);
-            return unreadCount;
         } catch (error) {
             console.log('Error in loadNotifications:', error);
+            // Fallback: set empty array nếu có lỗi
             setNotifications([]);
             setNotificationCount(0);
-            return 0;
         }
     };
 
-    // Load unread messages count
-    const loadUnreadMessagesCount = async () => {
-        if (!user?.id) {
-            return 0;
-        }
-
-        try {
-            const count = await unreadService.getUnreadMessagesCount(user.id);
-            const finalCount = count || 0;
-            setUnreadMessagesCount(finalCount);
-            return finalCount;
-        } catch (error) {
-            setUnreadMessagesCount(0);
-            return 0;
-        }
-    };
-
-    // Reload notifications và unread messages count khi quay lại từ personalNotifications
+    // Reload notifications khi quay lại từ personalNotifications
     useFocusEffect(
         useCallback(() => {
-            // Kiểm tra user trước khi truy cập user.id
-            if (!user?.id) return;
-
-            // Chỉ reload unread count từ database, KHÔNG reload toàn bộ notifications
-            // (vì reload từ cache sẽ làm mất unread count từ realtime)
-            Promise.all([
-                unreadService.getUnreadNotificationsCount(user.id), // Chỉ lấy unread count, không reload notifications
-                loadUnreadMessagesCount()
-            ]).then(([unreadNotificationsCount, unreadMessagesCount]) => {
-                // Cập nhật unread count từ database (không reload toàn bộ notifications)
-                setNotificationCount(unreadNotificationsCount || 0);
-            });
-
-            // Check cache hiện tại khi quay lại home (không cache lại)
-            const checkCacheOnFocus = async () => {
-                // Kiểm tra user trước khi truy cập user.id
-                if (!user?.id) return;
-
-                try {
-                    // Log hành vi người dùng từ bảng user_behavior
-                    try {
-                        const { data: userBehavior, error: behaviorError } = await supabase
-                            .from('user_behavior')
-                            .select('screen_name, visit_count')
-                            .eq('user_id', user.id)
-                            .order('visit_count', { ascending: false });
-
-                        if (!behaviorError && userBehavior && userBehavior.length > 0) {
-                            // Format: loại bỏ 'home' và tạo object JSON
-                            const behaviorObject = {};
-                            userBehavior
-                                .filter(item => item.screen_name !== 'home')
-                                .forEach(item => {
-                                    behaviorObject[item.screen_name] = item.visit_count;
-                                });
-
-                            if (Object.keys(behaviorObject).length > 0) {
-                                console.log(` [Hành vi người dùng]:`, JSON.stringify(behaviorObject, null, 2));
-                            }
-                        }
-                    } catch (e) {
-                        // Silent
-                    }
-
-                    // Log cache hiện tại
-                    await prefetchService.checkCurrentCache(user.id);
-                } catch (error) {
-                    console.log('[Home] Error checking cache:', error);
-                }
-            };
-
-            // Delay một chút để không block UI
-            const timer = setTimeout(() => {
-                checkCacheOnFocus();
-            }, 500);
-
-            return () => clearTimeout(timer);
+            loadNotifications();
         }, [user?.id])
     );
 
     // Xử lý scroll đến post cụ thể khi có scrollToPostId
     useEffect(() => {
         if (scrollToPostId && flatListRef.current && posts.length > 0) {
+            console.log('Scrolling to post:', scrollToPostId, 'Type:', typeof scrollToPostId);
+
+            // Tìm index của post cần scroll đến (convert cả 2 về string để so sánh)
             const postIndex = posts.findIndex(post => String(post.id) === String(scrollToPostId));
 
             if (postIndex !== -1) {
+                console.log('Found post at index:', postIndex);
+
+                // Scroll đến post với animation
                 setTimeout(() => {
                     flatListRef.current?.scrollToIndex({
                         index: postIndex,
                         animated: true,
-                        viewPosition: 0.5,
+                        viewPosition: 0.5, // Scroll để post ở giữa màn hình
                     });
-                }, 500);
+                }, 500); // Delay để đảm bảo FlatList đã render xong
+            } else {
+                console.log('Post not found in current posts list');
+                console.log('Available post IDs:', posts.map(p => `${p.id} (${typeof p.id})`));
+                console.log('Looking for:', scrollToPostId, `(${typeof scrollToPostId})`);
             }
-            setScrollToPostId(null);
+
+            setScrollToPostId(null); // Reset sau khi xử lý
         }
     }, [scrollToPostId, posts]);
 
@@ -347,6 +225,7 @@ const Home = () => {
                 try {
                     const postId = await AsyncStorage.getItem('scrollToPostId');
                     if (postId) {
+                        console.log('Posts loaded, scrolling to post:', postId);
                         setScrollToPostId(postId);
                     }
                 } catch (error) {
@@ -367,9 +246,20 @@ const Home = () => {
                     const commentId = await AsyncStorage.getItem('scrollToCommentId');
 
                     if (postId) {
+                        console.log('Found postId to scroll to:', postId);
+                        if (commentId) {
+                            console.log('Found commentId to scroll to:', commentId);
+                        }
+
+                        // Chỉ set scrollToPostId nếu posts đã có dữ liệu
                         if (posts.length > 0) {
                             setScrollToPostId(postId);
+                        } else {
+                            // Nếu posts chưa load, lưu lại để scroll sau
+                            console.log('Posts not loaded yet, will scroll after posts load');
                         }
+
+                        // Xóa khỏi AsyncStorage sau khi đã xử lý
                         await AsyncStorage.removeItem('scrollToPostId');
                         await AsyncStorage.removeItem('scrollToCommentId');
                     }
@@ -382,21 +272,27 @@ const Home = () => {
         }, [posts])
     );
     const handleNewComment = async (payload) => {
+        console.log('got new comment123', payload.new);
         if (payload.eventType === 'INSERT' && payload.new?.id) {
             setPosts(prevPosts => {
                 return prevPosts.map(post => {
                     if (post.id === payload.new.postId) {
                         const updatedComments = [...post.comments];
+
+                        // Nếu chưa có comment nào, tạo object đầu tiên với count = 1
                         if (updatedComments.length === 0) {
                             updatedComments.push({ count: 1 });
                             updatedComments.push(payload.new);
                         } else {
+                            // Cập nhật count trong comments[0]
                             updatedComments[0] = {
                                 ...updatedComments[0],
                                 count: (updatedComments[0].count || 0) + 1
                             };
+                            // Thêm comment mới
                             updatedComments.push(payload.new);
                         }
+                        console.log('Post comments sau khi update:', updatedComments);
 
                         return {
                             ...post,
@@ -440,8 +336,9 @@ const Home = () => {
     }, [user?.id]);
 
     useEffect(() => {
-        if (!user?.id) return; 
+        if (!user?.id) return; // Chỉ setup khi có user
 
+        // Cleanup existing subscriptions first
         Object.values(subscriptionsRef.current).forEach(channel => {
             if (channel && typeof channel.unsubscribe === 'function') {
                 channel.unsubscribe();
@@ -449,6 +346,7 @@ const Home = () => {
         });
         subscriptionsRef.current = {};
 
+        console.log('Setting up home subscriptions for user:', user.id);
 
         const postChannel = supabase
             .channel(`posts-${user.id}`)
@@ -469,20 +367,14 @@ const Home = () => {
                 event: 'INSERT',
                 schema: 'public',
                 table: 'notifications',
-                filter: `receiverId=eq.${user.id}`
+                filter: `receiver_id=eq.${user.id}`
+
             }, (payload) => {
-                handleNewNotification(payload);
+                handleNewNotification(payload)
             })
-            .on('postgres_changes', {
-                event: 'UPDATE',
-                schema: 'public',
-                table: 'notifications',
-                filter: `receiverId=eq.${user.id}`
-            }, (payload) => {
-                // Khi có notification được update (mark as read), reload để update count
-                handleNotificationUpdate(payload);
+            .subscribe((status) => {
+                console.log('notificationChanel status:', status)
             })
-            .subscribe()
 
         const commentChannel = supabase
             .channel(`comments-${user.id}`)
@@ -498,6 +390,7 @@ const Home = () => {
                 console.log('commentChannel status:', status)
             })
 
+        // Store channels in ref
         subscriptionsRef.current = {
             postChannel,
             notificationChannel,
@@ -505,9 +398,7 @@ const Home = () => {
         };
 
         return () => {
-            if (user?.id) {
-                console.log('Cleaning up home subscriptions for user:', user.id);
-            }
+            console.log('Cleaning up home subscriptions for user:', user.id);
             Object.values(subscriptionsRef.current).forEach(channel => {
                 if (channel && typeof channel.unsubscribe === 'function') {
                     channel.unsubscribe();
@@ -517,219 +408,13 @@ const Home = () => {
         }
     }, [user?.id])
 
-    // Xóa cache khi app reload (mount lần đầu)
-    useEffect(() => {
-        if (!user?.id || cacheClearedOnMountRef.current) return;
-
-        const clearCacheOnReload = async () => {
-            try {
-                const { clearAllCache } = require('../../utils/cacheHelper');
-                await clearAllCache(user.id);
-                // Reset prefetch flag để prefetch lại sau khi reload
-                hasPrefetchedRef.current = false;
-                hasPrefetchedCheckedRef.current = false;
-                await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
-                cacheClearedOnMountRef.current = true; // Đánh dấu đã xóa cache
-                console.log('[Home] Đã xóa cache và reset prefetch flag khi reload app');
-            } catch (error) {
-                console.log('[Home] Lỗi khi xóa cache khi reload:', error);
-            }
-        };
-
-        clearCacheOnReload();
-    }, [user?.id]); // Chỉ chạy 1 lần khi user.id thay đổi (reload app)
-
     // Load posts when component mounts
     useEffect(() => {
         if (user?.id) {
             getPosts();
-
-            // Load và đợi cả hai hàm hoàn thành trước khi log
-            Promise.all([
-                loadNotifications(),
-                loadUnreadMessagesCount()
-            ]);
+            loadNotifications();
         }
     }, [user?.id]);
-
-    // Detect app state change: clear cache khi thoát app, prefetch lại khi vào lại
-    useEffect(() => {
-        if (!user?.id) return;
-
-        const subscription = AppState.addEventListener('change', async (nextAppState) => {
-            const previousState = appStateRef.current;
-            appStateRef.current = nextAppState;
-
-            // Khi app chuyển sang background hoặc inactive → clear cache và reset prefetch flag
-            if (previousState === 'active' && (nextAppState === 'background' || nextAppState === 'inactive')) {
-                console.log('[Home] App chuyển sang background, đang xóa cache...');
-                try {
-                    const { clearAllCache } = require('../../utils/cacheHelper');
-                    await clearAllCache(user.id);
-                    // Reset prefetch flag để prefetch lại khi vào app
-                    hasPrefetchedRef.current = false;
-                    hasPrefetchedCheckedRef.current = false;
-                    await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
-                    console.log('[Home] Đã xóa cache và reset prefetch flag');
-                } catch (error) {
-                    console.log('[Home] Lỗi khi xóa cache:', error);
-                }
-            }
-
-            // Khi app quay lại active → prefetch lại cache
-            if (previousState !== 'active' && nextAppState === 'active') {
-                console.log('[Home] App quay lại active, sẽ prefetch lại cache...');
-                // Reset flag để prefetch lại
-                hasPrefetchedRef.current = false;
-                hasPrefetchedCheckedRef.current = false;
-                shouldPrefetchRef.current = true; // Trigger prefetch
-
-
-                if (posts.length > 0) {
-
-                    setTimeout(() => {
-
-                        const triggerPrefetch = async () => {
-                            try {
-                                const unreadMessagesCount = await unreadService.getUnreadMessagesCount(user.id);
-                                const unreadNotificationsCount = await unreadService.getUnreadNotificationsCount(user.id);
-                                const prefetchScreens = [];
-                                if (unreadMessagesCount > 0) {
-                                    prefetchScreens.push({ screen: 'chatList', priority: 1 });
-                                }
-                                if (unreadNotificationsCount > 0) {
-                                    prefetchScreens.push({ screen: 'personalNotifications', priority: 1 });
-                                }
-                                const predictions = await predictionService.getPredictions(user.id);
-
-                                //lấy ra các màn hình đã unread load ở prefetchscreen
-                                const existingScreens = new Set(prefetchScreens.map(p => p.screen));
-
-
-                                const topPredictions = predictions
-                                    .filter(p => !existingScreens.has(p.screen))
-                                    .slice(0, 3 - prefetchScreens.length);
-                                //gộp lại và chỉ lấy tối đa 3 màn hình
-                                const finalPrefetch = [...prefetchScreens, ...topPredictions].slice(0, 3);
-                                hasPrefetchedRef.current = true;
-
-                                await AsyncStorage.setItem(`hasPrefetched_${user.id}`, 'true');
-
-                                prefetchService.smartPrefetch(user.id, finalPrefetch);
-                            } catch (error) {
-                                console.log('[Home] Error triggering prefetch on app resume:', error);
-                            }
-                        };
-                        triggerPrefetch();
-                    }, 500);
-                }
-            }
-        });
-
-        return () => {
-            subscription?.remove();
-        };
-    }, [user?.id]);
-
-    // Prefetch sau khi posts load xong
-    useEffect(() => {
-        if (!user?.id || posts.length === 0) return;
-
-        // Nếu đã prefetch rồi và không có flag trigger, không làm gì nữa
-        if (hasPrefetchedRef.current && !shouldPrefetchRef.current) return;
-
-        // Reset trigger flag nếu đã trigger
-        if (shouldPrefetchRef.current) {
-            shouldPrefetchRef.current = false;
-        }
-
-        let unsubscribe = null;
-
-        // Setup realtime subscription cho unread
-        unsubscribe = unreadService.setupRealtimeSubscription(
-            user.id,
-            async () => {
-                // Khi có update unread → Chỉ reload unread messages count
-                // KHÔNG reload notifications (vì handleNewNotification đã cập nhật unread count rồi)
-                // KHÔNG prefetch (prefetch chỉ chạy lần đầu khi vào app)
-                await loadUnreadMessagesCount();
-                // Bỏ loadNotifications() để tránh reload từ cache làm unread count bị giảm
-            }
-        );
-
-        // Initial prefetch sau khi load xong posts (background)
-        // Prefetch lại mỗi khi vào app (cache đã bị xóa khi thoát app)
-        const initialPrefetch = async () => {
-            try {
-                // Kiểm tra AsyncStorage xem đã prefetch chưa trong session hiện tại
-                // (không persist qua các lần thoát app vì cache đã bị xóa)
-                if (!hasPrefetchedCheckedRef.current) {
-                    const prefetchedFlag = await AsyncStorage.getItem(`hasPrefetched_${user.id}`);
-                    if (prefetchedFlag === 'true') {
-                        hasPrefetchedRef.current = true;
-                    }
-                    hasPrefetchedCheckedRef.current = true;
-                }
-
-                // Nếu đã prefetch rồi trong session này, không prefetch nữa
-                if (hasPrefetchedRef.current) {
-                    console.log('[Home] Đã prefetch trong session này, không cần prefetch lại');
-                    return;
-                }
-
-                // Kiểm tra unread để ưu tiên prefetch
-                const unreadMessagesCount = await unreadService.getUnreadMessagesCount(user.id);
-                const unreadNotificationsCount = await unreadService.getUnreadNotificationsCount(user.id);
-
-                // Tạo danh sách prefetch ưu tiên
-                const prefetchScreens = [];
-
-                // Ưu tiên 1: chatList nếu có unread messages
-                if (unreadMessagesCount > 0) {
-                    prefetchScreens.push({ screen: 'chatList', priority: 1 });
-                }
-
-                // Ưu tiên 2: personalNotifications nếu có unread notifications
-                if (unreadNotificationsCount > 0) {
-                    prefetchScreens.push({ screen: 'personalNotifications', priority: 1 });
-                }
-
-                // Lấy top predictions để fill đến 3 màn hình (loại bỏ những cái đã có unread)
-                const predictions = await predictionService.getPredictions(user.id);
-                const existingScreens = new Set(prefetchScreens.map(p => p.screen));
-                const topPredictions = predictions
-                    .filter(p => !existingScreens.has(p.screen))
-                    .slice(0, 3 - prefetchScreens.length);
-
-                // Gộp lại, tối đa 3 cái
-                const finalPrefetch = [...prefetchScreens, ...topPredictions].slice(0, 3);
-
-                // Đảm bảo chỉ có tối đa 3 màn hình
-                if (finalPrefetch.length > 3) {
-                    console.log('[Warning] Prefetch có hơn 3 màn hình, chỉ lấy 3 màn hình đầu tiên');
-                    finalPrefetch.splice(3);
-                }
-
-                // Đánh dấu đã prefetch để không prefetch lại (persist qua các lần navigate)
-                hasPrefetchedRef.current = true;
-                await AsyncStorage.setItem(`hasPrefetched_${user.id}`, 'true');
-
-                prefetchService.smartPrefetch(user.id, finalPrefetch);
-            } catch (error) {
-                console.log('[Home] Error in initial prefetch:', error);
-            }
-        };
-
-        // Delay một chút để không block UI
-        const timer = setTimeout(() => {
-            initialPrefetch();
-        }, 1000);
-
-        return () => {
-            if (unsubscribe) unsubscribe();
-            clearTimeout(timer);
-        };
-    }, [user?.id, posts.length]);
 
     const getPosts = async () => {
         limit = limit + 4;
@@ -743,69 +428,69 @@ const Home = () => {
 
 
     return (
-        <View style={styles.container}>
-            {/* App Header */}
-            <AppHeader
-                notificationCount={notificationCount}
-                unreadMessagesCount={unreadMessagesCount}
-                onNotificationPress={() => router.push('personalNotifications')}
-                onMenuPress={() => setShowMenu(true)}
-            />
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.backgroundSecondary }}>
+            <View style={styles.container}>
+                {/* App Header */}
+                <AppHeader
+                    notificationCount={notificationCount}
+                    onNotificationPress={() => router.push('personalNotifications')}
+                    onMenuPress={() => setShowMenu(true)}
+                />
 
 
-            {/* Posts Feed */}
-            <FlatList
-                ref={flatListRef}
-                data={posts}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.listStyle}
-                keyExtractor={(item, index) => `post-${item.id}-${index}-${item.created_at || Date.now()}`}
-                onScrollToIndexFailed={(info) => {
-                    console.log('Scroll to index failed:', info);
-                    // Fallback: scroll to offset
-                    setTimeout(() => {
-                        flatListRef.current?.scrollToOffset({
-                            offset: info.averageItemLength * info.index,
-                            animated: true,
-                        });
-                    }, 100);
-                }}
-                ListHeaderComponent={() => (
-                    <View style={styles.createPostContainer}>
-                        <View style={styles.createPostBox}>
-                            <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
-                            <View style={styles.createPostInputArea}>
-                                <TouchableOpacity
-                                    style={styles.createPostPlaceholder}
-                                    onPress={handleCreatePost}
-                                >
-                                    <Text style={styles.createPostPlaceholderText}>Bạn đang nghĩ gì?</Text>
-                                </TouchableOpacity>
+                {/* Posts Feed */}
+                <FlatList
+                    ref={flatListRef}
+                    data={posts}
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.listStyle}
+                    keyExtractor={(item, index) => `post-${item.id}-${index}-${item.created_at || Date.now()}`}
+                    onScrollToIndexFailed={(info) => {
+                        console.log('Scroll to index failed:', info);
+                        // Fallback: scroll to offset
+                        setTimeout(() => {
+                            flatListRef.current?.scrollToOffset({
+                                offset: info.averageItemLength * info.index,
+                                animated: true,
+                            });
+                        }, 100);
+                    }}
+                    ListHeaderComponent={() => (
+                        <View style={styles.createPostContainer}>
+                            <View style={styles.createPostBox}>
+                                <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
+                                <View style={styles.createPostInputArea}>
+                                    <TouchableOpacity
+                                        style={styles.createPostPlaceholder}
+                                        onPress={handleCreatePost}
+                                    >
+                                        <Text style={styles.createPostPlaceholderText}>Bạn đang nghĩ gì?</Text>
+                                    </TouchableOpacity>
+                                </View>
                             </View>
                         </View>
-                    </View>
-                )}
-                renderItem={({ item, index }) => {
-                    return <PostCard
-                        item={item}
-                        currentUser={user}
-                        router={router}
-                        index={index} />
-                }}
-                onEndReached={() => {
-                    getPosts();
-                }}
-                onEndReachedThreshold={0.3}
-                ListFooterComponent={hasMore ? (
-                    <View style={{ marginVertical: posts.length == 0 ? 200 : 30 }}>
-                        <Loading />
-                    </View>
-                ) : (
-                    <View style={{ marginVertical: 30 }}>
-                        <Text style={styles.noPosts}>Không còn bài đăng</Text>
-                    </View>
-                )}
-            />
+                    )}
+                    renderItem={({ item }) => {
+                        return <PostCard
+                            item={item}
+                            currentUser={user}
+                            router={router} />
+                    }}
+                    onEndReached={() => {
+                        getPosts();
+                    }}
+                    onEndReachedThreshold={0.3}
+                    ListFooterComponent={hasMore ? (
+                        <View style={{ marginVertical: posts.length == 0 ? 200 : 30 }}>
+                            <Loading />
+                        </View>
+                    ) : (
+                        <View style={{ marginVertical: 30 }}>
+                            <Text style={styles.noPosts}>Không còn bài đăng</Text>
+                        </View>
+                    )}
+                />
+            </View>
 
             {/* Menu Drawer */}
             <Modal
@@ -828,8 +513,8 @@ const Home = () => {
                                             rounded={theme.radius.full}
                                         />
                                         <View style={styles.menuUserDetails}>
-                                            <Text style={styles.menuUserName}>{userName}</Text>
-                                            <Text style={styles.menuUserEmail}>{userInfo?.email || user?.email || 'user@example.com'}</Text>
+                                            <Text style={styles.menuUserName}>{user?.name || 'User'}</Text>
+                                            <Text style={styles.menuUserEmail}>{user?.email || 'user@example.com'}</Text>
                                         </View>
                                     </View>
                                 </View>
@@ -847,8 +532,46 @@ const Home = () => {
                                         <Text style={styles.menuItemText}>Trang cá nhân</Text>
                                     </TouchableOpacity>
 
-                                    {/* Các item menu khác của bạn... */}
-                                    <TouchableOpacity style={styles.menuItem} onPress={() => { setShowMenu(false); router.push('notifications'); }}>
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('members');
+                                        }}
+                                    >
+                                        <Icon name="users" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Thành viên</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('activities');
+                                        }}
+                                    >
+                                        <Icon name="activity" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Hoạt động</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('documents');
+                                        }}
+                                    >
+                                        <Icon name="file-text" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Tài liệu</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
+                                            router.push('notifications');
+                                        }}
+                                    >
                                         <Icon name="megaphone" size={hp(2.5)} color={theme.colors.text} />
                                         <Text style={styles.menuItemText}>Thông báo CLB</Text>
                                     </TouchableOpacity>
@@ -901,21 +624,10 @@ const Home = () => {
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
-                                            router.push('test');
-                                        }}
-                                    >
-                                        <Icon name="code" size={hp(2.5)} color={theme.colors.text} />
-                                        <Text style={styles.menuItemText}>TEST</Text>
-                                    </TouchableOpacity>
-
-                                    <TouchableOpacity
-                                        style={styles.menuItem}
-                                        onPress={() => {
-                                            setShowMenu(false);
                                             router.push('newChat');
                                         }}
                                     >
-                                        <Icon name="message-circle" size={hp(2.5)} color={theme.colors.text} />
+                                        <Icon name="messageCircle" size={hp(2.5)} color={theme.colors.text} />
                                         <Text style={styles.menuItemText}>Tạo cuộc trò chuyện</Text>
                                     </TouchableOpacity>
                                 </View>
@@ -929,7 +641,7 @@ const Home = () => {
                                             onLogout();
                                         }}
                                     >
-                                        <Icon name="logout" size={hp(2.5)} color={theme.colors.error} />
+                                        <Icon name="logOut" size={hp(2.5)} color={theme.colors.error} />
                                         <Text style={[styles.menuItemText, styles.logoutText]}>Đăng xuất</Text>
                                     </TouchableOpacity>
                                 </View>
@@ -952,20 +664,30 @@ const Home = () => {
                         onPress={() => setShowCreatePost(false)}
                     />
                     <View style={styles.createPostModal}>
+                        {/* Modal Header */}
                         <View style={styles.createPostHeader}>
-                            <TouchableOpacity style={styles.createPostCancel} onPress={() => setShowCreatePost(false)}>
+                            <TouchableOpacity
+                                style={styles.createPostCancel}
+                                onPress={() => setShowCreatePost(false)}
+                            >
                                 <Text style={styles.createPostCancelText}>Hủy</Text>
                             </TouchableOpacity>
                             <Text style={styles.createPostTitle}>Tạo bài viết</Text>
-                            <TouchableOpacity style={styles.createPostShare} onPress={handleCreatePost}>
+                            <TouchableOpacity
+                                style={styles.createPostShare}
+                                onPress={handleCreatePost}
+                            >
                                 <Text style={styles.createPostShareText}>Đăng</Text>
                             </TouchableOpacity>
                         </View>
+
+                        {/* Modal Content */}
                         <View style={styles.createPostContent}>
                             <View style={styles.createPostUser}>
                                 <UserAvatar user={user} size={hp(4)} rounded={theme.radius.full} />
                                 <Text style={styles.createPostUserName}>{user?.name || 'User'}</Text>
                             </View>
+
                             <TextInput
                                 style={styles.createPostTextInput}
                                 value={postContent}
@@ -988,17 +710,17 @@ const Home = () => {
                 onDecline={handleDeclineCall}
             />
 
-        </View>
+        </SafeAreaView>
     )
-} // <--- DẤU NGOẶC QUAN TRỌNG ĐÓNG COMPONENT
+}
 
 export default Home
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: theme.colors.background,
-        paddingTop: 35, // Giống trang thông báo CLB
+        backgroundColor: theme.colors.backgroundSecondary,
+        paddingTop: 35, // Consistent padding top
     },
 
     // Header Styles
@@ -1152,22 +874,32 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginRight: wp(4),
     },
-    // ... Copy lại toàn bộ styles cũ của bạn vào đây ...
-    // Để cho gọn tôi không copy lại hàng trăm dòng styles, 
-    // bạn hãy paste phần styles cũ của bạn vào đây
-    listStyle: {
-        paddingBottom: hp(10),
+
+    addStoryIcon: {
+        width: hp(6),
+        height: hp(6),
+        borderRadius: theme.radius.full,
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderWidth: 2,
+        borderColor: theme.colors.primary,
+        borderStyle: 'dashed',
+        justifyContent: 'center',
+        alignItems: 'center',
     },
-    noPosts: {
-        textAlign: 'center',
-        fontSize: hp(1.8),
-        color: theme.colors.textSecondary,
-        marginTop: hp(2),
+
+    storyText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginTop: hp(0.5),
+        fontWeight: theme.fonts.medium,
     },
+
+    // Create Post Styles
     createPostContainer: {
         backgroundColor: theme.colors.background,
         paddingBottom: hp(2),
     },
+
     createPostBox: {
         flexDirection: 'row',
         alignItems: 'flex-start',
@@ -1179,27 +911,444 @@ const styles = StyleSheet.create({
         marginHorizontal: wp(4),
         marginVertical: hp(1),
     },
+
     createPostInputArea: {
         flex: 1,
         marginLeft: wp(3),
     },
+
+    createPostUserName: {
+        fontSize: hp(1.4),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginBottom: hp(0.5),
+    },
+
     createPostPlaceholder: {
         paddingVertical: hp(1.2),
         justifyContent: 'center',
     },
+
     createPostPlaceholderText: {
         fontSize: hp(1.6),
         color: theme.colors.textLight,
     },
-    // ... Các styles cho Menu, Modal ...
+
+    createPostForm: {
+        padding: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: hp(2),
+    },
+
+    createPostFormUserName: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginLeft: wp(3),
+    },
+
+    createPostTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(10),
+        textAlignVertical: 'top',
+        marginBottom: hp(2),
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    createPostFormActions: {
+        marginBottom: hp(2),
+        paddingVertical: hp(1),
+        borderTopWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    createPostFormAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        marginBottom: hp(0.5),
+    },
+
+    createPostFormActionIcon: {
+        width: hp(3.5),
+        height: hp(3.5),
+        borderRadius: theme.radius.full,
+        backgroundColor: theme.colors.backgroundSecondary,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
+    createPostFormActionText: {
+        fontSize: hp(1.5),
+        color: theme.colors.text,
+        marginLeft: wp(2),
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostFormCancelText: {
+        fontSize: hp(1.5),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        borderRadius: theme.radius.sm,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitText: {
+        fontSize: hp(1.5),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    // Inline Form Styles
+    createPostFormInline: {
+        paddingTop: hp(0.5),
+    },
+
+    createPostTextInputInline: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(8),
+        textAlignVertical: 'top',
+        marginBottom: hp(1.5),
+        paddingHorizontal: wp(2),
+        paddingVertical: hp(1),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+
+
+
+    createPostFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+        paddingTop: hp(1),
+    },
+
+    createPostFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostFormCancelText: {
+        fontSize: hp(1.5),
+        color: theme.colors.textSecondary,
+        fontWeight: theme.fonts.medium,
+    },
+
+    createPostFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.2),
+        borderRadius: theme.radius.sm,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+        ...theme.shadows.small,
+    },
+
+    createPostFormSubmitText: {
+        fontSize: hp(1.5),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+
+    createPostIcon: {
+        padding: wp(2),
+    },
+
+
+    createPostActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: wp(4),
+    },
+
+    createPostAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(0.8),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.full,
+    },
+
+    createPostActionText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginLeft: wp(1.5),
+        fontWeight: theme.fonts.medium,
+    },
+
+
+    // Post Creation Form Styles
+    postCreationForm: {
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.md,
+        marginTop: hp(1),
+        marginHorizontal: wp(2),
+        ...theme.shadows.small,
+        zIndex: 1000,
+    },
+
+    postFormInline: {
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.md,
+        marginTop: hp(1),
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(2),
+    },
+
+
+    postFormTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(12),
+        textAlignVertical: 'top',
+        marginBottom: hp(2),
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1.5),
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.sm,
+    },
+
+    postFormActions: {
+        marginBottom: hp(2),
+        paddingVertical: hp(1),
+        borderTopWidth: 1,
+        borderColor: theme.colors.border,
+    },
+
+    postFormAction: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: wp(3),
+        paddingVertical: hp(1),
+    },
+
+    postFormActionText: {
+        fontSize: hp(1.4),
+        color: theme.colors.text,
+        marginLeft: wp(1.5),
+        fontWeight: theme.fonts.medium,
+    },
+
+    postFormFooter: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: wp(3),
+    },
+
+    postFormCancel: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+    },
+
+    postFormCancelText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+    },
+
+    postFormSubmit: {
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1),
+        borderRadius: theme.radius.sm,
+    },
+
+    postFormSubmitDisabled: {
+        backgroundColor: theme.colors.textLight,
+    },
+
+    postFormSubmitText: {
+        fontSize: hp(1.6),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    // Create Post Modal Styles
+    createPostOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-end',
+    },
+
+    createPostBackdrop: {
+        flex: 1,
+    },
+
+    createPostModal: {
+        backgroundColor: theme.colors.background,
+        borderTopLeftRadius: theme.radius.xl,
+        borderTopRightRadius: theme.radius.xl,
+        maxHeight: hp(80),
+    },
+
+    createPostHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(1.5),
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+
+    createPostCancel: {
+        paddingVertical: hp(0.5),
+    },
+
+    createPostCancelText: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+    },
+
+    createPostTitle: {
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+    },
+
+    createPostShare: {
+        paddingVertical: hp(0.5),
+        paddingHorizontal: wp(3),
+        backgroundColor: theme.colors.primary,
+        borderRadius: theme.radius.sm,
+    },
+
+    createPostShareText: {
+        fontSize: hp(1.6),
+        color: 'white',
+        fontWeight: theme.fonts.bold,
+    },
+
+    createPostContent: {
+        paddingHorizontal: wp(4),
+        paddingVertical: hp(2),
+    },
+
+    createPostUser: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: hp(2),
+    },
+
+    createPostUserName: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        marginLeft: wp(3),
+    },
+
+    createPostTextInput: {
+        fontSize: hp(1.8),
+        color: theme.colors.text,
+        minHeight: hp(20),
+        textAlignVertical: 'top',
+        padding: 0,
+        margin: 0,
+    },
+
+    // List Styles
+    listStyle: {
+        paddingBottom: hp(10),
+    },
+
+    noPosts: {
+        textAlign: 'center',
+        fontSize: hp(1.8),
+        color: theme.colors.textSecondary,
+        marginTop: hp(2),
+    },
+
+    // Menu Styles
+    menuButton: {
+        padding: wp(2),
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.sm,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    menuIconContainer: {
+        width: hp(2.5),
+        height: hp(2),
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    menuLine: {
+        width: hp(2),
+        height: 3,
+        backgroundColor: theme.colors.text,
+        borderRadius: 1.5,
+    },
+    menuText: {
+        fontSize: hp(2.5),
+        color: theme.colors.text,
+        fontWeight: 'bold',
+    },
+
     menuOverlay: {
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.5)',
         justifyContent: 'flex-start',
-        alignItems: 'flex-end',
-        paddingTop: 35,
+        alignItems: 'flex-end', // Đẩy menu về phía phải
+        paddingTop: 35, // Consistent padding top
     },
-    menuBackdrop: { flex: 1 },
+
+    menuBackdrop: {
+        flex: 1,
+    },
+
     menuContainer: {
         width: wp(80),
         height: '100%',
@@ -1207,20 +1356,57 @@ const styles = StyleSheet.create({
         ...theme.shadows.large,
         justifyContent: 'space-between',
     },
+
     menuHeader: {
         flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         paddingHorizontal: wp(4),
         paddingVertical: hp(2),
-        paddingTop: hp(3),
+        paddingTop: hp(3), // Thêm padding top
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
         backgroundColor: theme.colors.primary,
     },
-    menuUserInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-    menuUserDetails: { marginLeft: wp(3), flex: 1 },
-    menuUserName: { fontSize: hp(1.8), fontWeight: theme.fonts.semiBold, color: 'white' },
-    menuUserEmail: { fontSize: hp(1.4), color: 'rgba(255, 255, 255, 0.8)' },
-    menuItems: { paddingVertical: hp(1), flex: 1 },
+
+    menuUserInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+
+    menuUserDetails: {
+        marginLeft: wp(3),
+        flex: 1,
+    },
+
+    menuUserName: {
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.semiBold,
+        color: 'white',
+        marginBottom: hp(0.2),
+    },
+
+    menuUserEmail: {
+        fontSize: hp(1.4),
+        color: 'rgba(255, 255, 255, 0.8)',
+    },
+
+    menuCloseButton: {
+        padding: wp(2),
+    },
+
+    menuItems: {
+        paddingVertical: hp(1),
+        flex: 1,
+    },
+
+    menuFooter: {
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.border,
+        paddingVertical: hp(1),
+    },
+
     menuItem: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -1229,19 +1415,25 @@ const styles = StyleSheet.create({
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
     },
-    menuItemText: { fontSize: hp(1.6), color: theme.colors.text, marginLeft: wp(3) },
-    menuFooter: { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingVertical: hp(1) },
-    logoutItem: { borderBottomWidth: 0 },
-    logoutText: { color: theme.colors.error },
-    createPostOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)', justifyContent: 'flex-end' },
-    createPostBackdrop: { flex: 1 },
-    createPostModal: { backgroundColor: theme.colors.background, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, maxHeight: hp(80) },
-    createPostHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: wp(4), borderBottomWidth: 1, borderColor: theme.colors.border },
-    createPostTitle: { fontSize: hp(1.8), fontWeight: 'bold' },
-    createPostContent: { padding: wp(4) },
-    createPostUser: { flexDirection: 'row', alignItems: 'center', marginBottom: hp(2) },
-    createPostUserName: { marginLeft: wp(3), fontWeight: 'bold' },
-    createPostTextInput: { fontSize: hp(1.8), minHeight: hp(20), textAlignVertical: 'top' },
-    createPostCancelText: { color: theme.colors.textSecondary },
-    createPostShareText: { color: theme.colors.primary, fontWeight: 'bold' }
+
+    menuItemText: {
+        fontSize: hp(1.6),
+        color: theme.colors.text,
+        marginLeft: wp(3),
+        fontWeight: theme.fonts.medium,
+    },
+
+    menuDivider: {
+        height: 1,
+        backgroundColor: theme.colors.border,
+        marginVertical: hp(1),
+    },
+
+    logoutItem: {
+        borderBottomWidth: 0,
+    },
+
+    logoutText: {
+        color: theme.colors.error,
+    },
 })

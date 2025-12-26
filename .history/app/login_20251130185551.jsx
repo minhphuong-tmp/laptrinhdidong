@@ -3,7 +3,6 @@ import { StatusBar } from 'expo-status-bar'
 import { useRef, useState } from 'react'
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
 import Recaptcha from 'react-native-recaptcha-that-works'
-import { ActivityIndicator, Alert, Keyboard, Pressable, StyleSheet, Text, TouchableWithoutFeedback, View } from 'react-native'
 import Icon from '../assets/icons'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
@@ -14,8 +13,6 @@ import { useAuth } from '../context/AuthContext'
 import { hp, wp } from '../helpers/common'
 import { supabase } from '../lib/supabase'
 //6Lf0cwAsAAAAAOXTCtOE4A1zFreGZ1BXwMLAc_Z2
-import { signInWithMicrosoft } from '../services/authService'
-
 
 
 const Login = () => {
@@ -26,22 +23,6 @@ const Login = () => {
     const emailRef = useRef("");
     const passwordRef = useRef("");
     const [loading, setLoading] = useState(false);
-    const [microsoftLoading, setMicrosoftLoading] = useState(false);
-
-    const handleMicrosoftLogin = async () => {
-        setMicrosoftLoading(true);
-        try {
-            const result = await signInWithMicrosoft();
-            if (result.success) {
-                // AuthContext sẽ tự động handle navigation
-                console.log('Microsoft login successful');
-            }
-        } catch (error) {
-            console.error('Microsoft login error:', error);
-        } finally {
-            setMicrosoftLoading(false);
-        }
-    };
 
     // [Thêm mới] Ref và Key cho reCAPTCHA
     const recaptchaRef = useRef(null);
@@ -180,30 +161,6 @@ const Login = () => {
                 lang="vi" // Hiển thị tiếng Việt
                 theme="light"
             />  
-
-                        {/* Divider */}
-                        <View style={styles.dividerContainer}>
-                            <View style={styles.dividerLine} />
-                            <Text style={styles.dividerText}>Hoặc</Text>
-                            <View style={styles.dividerLine} />
-                        </View>
-
-                        {/* Microsoft Login Button */}
-                        <Pressable
-                            style={[styles.microsoftButton, microsoftLoading && styles.microsoftButtonDisabled]}
-                            onPress={handleMicrosoftLogin}
-                            disabled={microsoftLoading || loading}
-                        >
-                            {microsoftLoading ? (
-                                <ActivityIndicator color="#FFFFFF" size="small" />
-                            ) : (
-                                <>
-                                    <Text style={styles.microsoftIcon}>🔷</Text>
-                                    <Text style={styles.microsoftButtonText}>Đăng nhập với Microsoft</Text>
-                                </>
-                            )}
-                        </Pressable>
-
                     </View>
                     {/* footer */}
                     <View style={styles.footer}>
@@ -256,49 +213,7 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         color: theme.colors.text,
         fontSize: hp(1.6)
-    },
-    dividerContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: wp(3),
-        marginVertical: hp(1),
-    },
-    dividerLine: {
-        flex: 1,
-        height: 1,
-        backgroundColor: theme.colors.gray || '#E0E0E0',
-    },
-    dividerText: {
-        color: theme.colors.text,
-        fontSize: hp(1.5),
-        opacity: 0.6,
-    },
-    microsoftButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#00A4EF',
-        paddingVertical: hp(1.8),
-        paddingHorizontal: wp(5),
-        borderRadius: theme.radius.md,
-        gap: wp(3),
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
-    },
-    microsoftButtonDisabled: {
-        opacity: 0.6,
-    },
-    microsoftIcon: {
-        fontSize: wp(5),
-    },
-    microsoftButtonText: {
-        color: '#FFFFFF',
-        fontSize: hp(1.8),
-        fontWeight: theme.fonts.semibold,
-    },
+    }
 
 
 })
