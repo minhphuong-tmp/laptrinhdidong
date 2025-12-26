@@ -1777,25 +1777,12 @@ class EncryptionService {
      * @returns {Promise<string>} Decrypted plaintext
      */
     async decryptMessageWithConversationKey(encryptedContent, conversationKey) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1779',message:'decryptMessageWithConversationKey entry',data:{encryptedContentLength:encryptedContent?.length,encryptedContentType:typeof encryptedContent,conversationKeyType:conversationKey?.constructor?.name,conversationKeyLength:conversationKey?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-        // #endregion
         try {
             // Validate inputs
             if (!encryptedContent || typeof encryptedContent !== 'string' || encryptedContent.trim() === '') {
-                if (__DEV__) {
-                    console.warn('[EncryptionService] Invalid encryptedContent:', {
-                        type: typeof encryptedContent,
-                        isEmpty: !encryptedContent || encryptedContent.trim() === ''
-                    });
-                }
                 return null;
             }
-            const keyValid = conversationKey instanceof Uint8Array && conversationKey.length === 32;
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1791',message:'conversationKey validation',data:{keyValid,isUint8Array:conversationKey instanceof Uint8Array,keyLength:conversationKey?.length,keyType:conversationKey?.constructor?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-            // #endregion
-            if (!keyValid) {
+            if (!(conversationKey instanceof Uint8Array) || conversationKey.length !== 32) {
                 if (__DEV__) {
                     console.warn('[EncryptionService] Invalid conversationKey:', {
                         isUint8Array: conversationKey instanceof Uint8Array,
@@ -1821,11 +1808,7 @@ class EncryptionService {
             // Base64 chỉ chứa: A-Z, a-z, 0-9, +, /, = (padding)
             const sanitized = encryptedContent.trim().replace(/\s/g, '').replace(/\n/g, '').replace(/\r/g, '');
             const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
-            const base64Valid = base64Regex.test(sanitized);
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1817',message:'base64 validation result',data:{base64Valid,encryptedContentLength:encryptedContent.length,sanitizedLength:sanitized.length,sanitizedPreview:sanitized.substring(0,50)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
-            if (!base64Valid) {
+            if (!base64Regex.test(sanitized)) {
                 // Không phải base64 hợp lệ → có thể là plaintext hoặc format khác
                 if (__DEV__) {
                     console.warn('[EncryptionService] EncryptedContent is not valid base64 (likely plaintext or wrong format):', {
@@ -1839,158 +1822,8 @@ class EncryptionService {
 
             // Decrypt content bằng ConversationKey (AES-GCM)
             // decryptAES sẽ gọi base64ToUint8Array (đã có sanitize và validation)
-            let decrypted;
-            try {
-                decrypted = await this.decryptAES(encryptedContent, conversationKey);
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1831',message:'decryptAES result',data:{decryptedType:typeof decrypted,decryptedIsNull:decrypted===null,decryptedIsUndefined:decrypted===undefined,isUint8Array:decrypted instanceof Uint8Array,isArrayBuffer:decrypted instanceof ArrayBuffer,length:typeof decrypted==='string'?decrypted.length:'N/A',preview:typeof decrypted==='string'?decrypted.substring(0,20):'N/A'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                // #endregion
-            } catch (decryptError) {
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1831',message:'decryptAES error',data:{errorMessage:decryptError?.message,errorStack:decryptError?.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                // #endregion
-                throw decryptError;
-            }
-            
-            // DEBUG: Log để kiểm tra kết quả decrypt
-            if (__DEV__ && decrypted) {
-                console.log('[EncryptionService] decryptMessageWithConversationKey result:', {
-                    type: typeof decrypted,
-                    isUint8Array: decrypted instanceof Uint8Array,
-                    isArrayBuffer: decrypted instanceof ArrayBuffer,
-                    length: typeof decrypted === 'string' ? decrypted.length : 'N/A',
-                    preview: typeof decrypted === 'string' ? decrypted.substring(0, 50) : 'N/A',
-                    originalLength: encryptedContent.length
-                });
-            }
-            
-            // CRITICAL: Validate và convert kết quả về string
-            // TUYỆT ĐỐI không trả về Uint8Array, ArrayBuffer, hoặc bất kỳ type nào khác
-            if (!decrypted) {
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1847',message:'decrypted is null/undefined',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                // #endregion
-                return null;
-            }
-            
-            // Nếu là Uint8Array hoặc ArrayBuffer → convert bằng TextDecoder
-            if (decrypted instanceof Uint8Array) {
-                const decoder = new TextDecoder();
-                const plaintext = decoder.decode(decrypted);
-                const plaintextValid = typeof plaintext === 'string' && plaintext.trim().length > 0;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1852',message:'Uint8Array decode result',data:{plaintextValid,plaintextType:typeof plaintext,plaintextLength:plaintext?.length,plaintextTrimLength:plaintext?.trim()?.length,preview:plaintext?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                // #endregion
-                // Validate plaintext là string hợp lệ
-                if (plaintextValid) {
-                    return plaintext;
-                }
-                if (__DEV__) {
-                    console.warn('[EncryptionService] Decrypted Uint8Array resulted in invalid string:', {
-                        length: plaintext?.length,
-                        preview: plaintext?.substring(0, 50)
-                    });
-                }
-                return null;
-            }
-            
-            if (decrypted instanceof ArrayBuffer) {
-                const decoder = new TextDecoder();
-                const plaintext = decoder.decode(decrypted);
-                const plaintextValid = typeof plaintext === 'string' && plaintext.trim().length > 0;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1868',message:'ArrayBuffer decode result',data:{plaintextValid,plaintextType:typeof plaintext,plaintextLength:plaintext?.length,plaintextTrimLength:plaintext?.trim()?.length,preview:plaintext?.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                // #endregion
-                // Validate plaintext là string hợp lệ
-                if (plaintextValid) {
-                    return plaintext;
-                }
-                if (__DEV__) {
-                    console.warn('[EncryptionService] Decrypted ArrayBuffer resulted in invalid string:', {
-                        length: plaintext?.length,
-                        preview: plaintext?.substring(0, 50)
-                    });
-                }
-                return null;
-            }
-            
-            // Nếu đã là string → validate và return
-            if (typeof decrypted === 'string') {
-                // CRITICAL: Validate string không rỗng
-                if (decrypted.trim().length === 0) {
-                    if (__DEV__) {
-                        console.warn('[EncryptionService] Decrypted string is empty');
-                    }
-                    return null;
-                }
-                
-                // CRITICAL: Kiểm tra xem có chứa ký tự nhị phân (non-printable) không
-                // Plaintext hợp lệ chỉ chứa printable characters (text, emoji, spaces, etc.)
-                // Nếu có ký tự nhị phân (0x00-0x1F trừ \n, \r, \t) hoặc replacement character () → có thể là lỗi decrypt
-                // CHỈ reject nếu có NHIỀU ký tự nhị phân (>= 2) hoặc có replacement character
-                const binaryCharMatches = decrypted.match(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFD]/g);
-                const hasReplacementChar = decrypted.includes('\uFFFD');
-                const binaryCharCount = binaryCharMatches ? binaryCharMatches.length : 0;
-                
-                // Nếu có replacement character (TextDecoder decode lỗi) → reject
-                // Nếu có >= 2 ký tự nhị phân → reject (có thể là decrypt sai)
-                // Nếu chỉ có 1 ký tự nhị phân → có thể là emoji hoặc ký tự đặc biệt hợp lệ → cho phép
-                const rejectedByBinary = hasReplacementChar || binaryCharCount >= 2;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1905',message:'binary chars validation',data:{rejectedByBinary,hasReplacementChar,binaryCharCount,decryptedLength:decrypted.length,preview:decrypted.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                // #endregion
-                if (rejectedByBinary) {
-                    if (__DEV__) {
-                        console.warn('[EncryptionService] Decrypted string contains binary/non-printable characters (likely decrypt error):', {
-                            length: decrypted.length,
-                            preview: decrypted.substring(0, 20),
-                            hasReplacementChar,
-                            binaryCharCount,
-                            charCodes: Array.from(decrypted.substring(0, 20)).map(c => c.charCodeAt(0))
-                        });
-                    }
-                    return null;
-                }
-                
-                // CRITICAL: Kiểm tra xem có phải ciphertext không
-                // Ciphertext base64 thường có ký tự đặc biệt: +, /, = (padding)
-                // Plaintext hợp lệ có thể ngắn (OK, Hi, Yes) nhưng không có +, /, =
-                // Nếu string ngắn (<= 10 ký tự) VÀ có ký tự base64 đặc biệt (+, /, =) → có thể là ciphertext
-                const hasBase64SpecialChars = decrypted.includes('+') || decrypted.includes('/') || decrypted.includes('=');
-                const rejectedByBase64Like = decrypted.length <= 10 && hasBase64SpecialChars;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1923',message:'base64-like validation',data:{rejectedByBase64Like,decryptedLength:decrypted.length,hasBase64SpecialChars,hasPlus:decrypted.includes('+'),hasSlash:decrypted.includes('/'),hasEquals:decrypted.includes('='),preview:decrypted.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                // #endregion
-                if (rejectedByBase64Like) {
-                    if (__DEV__) {
-                        console.warn('[EncryptionService] Decrypted string looks like ciphertext (short and contains base64 special chars):', {
-                            length: decrypted.length,
-                            value: decrypted.substring(0, 20),
-                            hasPlus: decrypted.includes('+'),
-                            hasSlash: decrypted.includes('/'),
-                            hasEquals: decrypted.includes('=')
-                        });
-                    }
-                    return null;
-                }
-                
-                // Plaintext hợp lệ → return
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/2005ce12-4d3c-49aa-9010-db0a71992420',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryptionService.js:1937',message:'decryptMessageWithConversationKey success',data:{decryptedLength:decrypted.length,preview:decrypted.substring(0,20)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'ALL'})}).catch(()=>{});
-                // #endregion
-                return decrypted;
-            }
-            
-            // Nếu không phải string, Uint8Array, hoặc ArrayBuffer → return null
-            if (__DEV__) {
-                console.warn('[EncryptionService] Decrypted result is not a string:', {
-                    type: typeof decrypted,
-                    isUint8Array: decrypted instanceof Uint8Array,
-                    isArrayBuffer: decrypted instanceof ArrayBuffer,
-                    constructor: decrypted?.constructor?.name
-                });
-            }
-            return null;
+            const decrypted = await this.decryptAES(encryptedContent, conversationKey);
+            return decrypted;
         } catch (error) {
             // Log chi tiết để debug
             if (__DEV__) {

@@ -1,6 +1,28 @@
 import { supabase } from "../lib/supabase";
 import deviceService from "./deviceService";
 import encryptionService from "./encryptionService";
+import { detectCiphertextFormat } from "../utils/messageValidation";
+
+/**
+ * ✅ AUDIT HELPER: Assert content không phải plaintext khi is_encrypted === true
+ * @param {string} content - Content cần kiểm tra
+ * @param {boolean} isEncrypted - Flag is_encrypted
+ * @param {string} context - Context để log (ví dụ: 'sendMessage', 'editMessage')
+ * @throws {Error} Nếu is_encrypted === true nhưng content là plaintext
+ */
+const assertEncryptedContentIsCiphertext = (content, isEncrypted, context = 'unknown') => {
+    if (isEncrypted === true && content) {
+        if (!detectCiphertextFormat(content)) {
+            const errorMsg = `[${context}] ❌ VI PHẠM INVARIANT: is_encrypted=true nhưng content không phải ciphertext format`;
+            console.error(errorMsg, {
+                contentLength: content?.length,
+                contentPreview: content?.substring(0, 50),
+                isEncrypted: isEncrypted
+            });
+            throw new Error('Content must be ciphertext when is_encrypted=true');
+        }
+    }
+};
 
 // ===== MEDIA UPLOAD =====
 export const uploadMediaFile = async (file, type = 'image') => {
@@ -548,8 +570,10 @@ const isMessageEncrypted = (msg) => {
         if (hasValidKey) {
             return true;
         } else {
-            // Flag true nhưng không có key hợp lệ → self-heal thành plaintext
-            console.warn('[E2EE Debug] Message có is_encrypted=true nhưng không có key hợp lệ:', {
+            // ✅ SERVER-SIDE ENCRYPTION: Flag true nhưng không có key hợp lệ → vẫn giữ nguyên flag
+            // KHÔNG ép is_encrypted = false
+            // UI sẽ hiển thị placeholder hoặc error message
+            console.warn('[SERVER-SIDE ENCRYPTION] Message có is_encrypted=true nhưng không có key hợp lệ:', {
                 id: msg.id,
                 is_encrypted: msg.is_encrypted,
                 encrypted_aes_key: msg.encrypted_aes_key,
@@ -558,8 +582,8 @@ const isMessageEncrypted = (msg) => {
                 message_type: msg.message_type,
                 is_sender_copy: msg.is_sender_copy
             });
-            msg.is_encrypted = false;
-            return false;
+            // KHÔNG set msg.is_encrypted = false
+            return false; // Vẫn return false để UI biết không decrypt được
         }
     }
 
@@ -579,10 +603,10 @@ const isMessageEncrypted = (msg) => {
 // ===== MESSAGES =====
 export const sendMessage = async (data) => {
     try {
-        // Kiểm tra conversation type
+        // Kiểm tra conversation type và PIN status
         const { data: conversation, error: convError } = await supabase
             .from('conversations')
-            .select('type')
+            .select('type, encrypted_conversation_key')
             .eq('id', data.conversation_id)
             .single();
 
@@ -594,112 +618,103 @@ export const sendMessage = async (data) => {
         // FIX: Lấy device ID - đảm bảo luôn lấy từ deviceService, không dùng cache cũ
         const deviceId = await deviceService.getOrCreateDeviceId();
 
-        // Chỉ tạo 2 messages cho direct chat và text message
+        // ✅ SERVER-SIDE ENCRYPTION: Gửi plaintext lên backend, backend sẽ encrypt và lưu ciphertext
+        // Chỉ tạo 1 message: encrypted (ciphertext)
+        // KHÔNG tạo receiver message plaintext
         if (conversation?.type === 'direct' && data.message_type === 'text') {
             try {
-                // ===== NEW ARCHITECTURE: Encrypt bằng ConversationKey =====
+                // ===== SERVER-SIDE ENCRYPTION: Client gửi plaintext, backend encrypt =====
+                // TODO: Backend cần có function/trigger để tự động encrypt message
+                // Tạm thời: Client encrypt trước khi gửi (sẽ chuyển sang backend encrypt sau)
+                
                 const conversationKeyService = require('./conversationKeyService').default;
-
-                // Lấy hoặc tạo ConversationKey cho conversation (đã được mã hóa bằng PIN và lưu local)
+                
+                // ✅ YÊU CẦU 1: Check conversation.has_pin (encrypted_conversation_key tồn tại)
+                const hasPin = !!conversation.encrypted_conversation_key;
                 const conversationKey = await conversationKeyService.getOrCreateConversationKey(data.conversation_id);
 
                 if (!conversationKey) {
-                    throw new Error('Cannot get or create ConversationKey');
-                }
-
-                // Mã hóa nội dung bằng ConversationKey
-                // encryptedContent là base64 string (không cần format phức tạp như trước)
-                const encryptedContent = await encryptionService.encryptMessageWithConversationKey(
-                    data.content,
-                    conversationKey
-                );
-
-                // Tạo 2 messages: receiver (plaintext) và sender (encrypted)
-                const { data: receiverMessage, error: receiverError } = await supabase
-                    .from('messages')
-                    .insert({
-                        ...data,
-                        content: data.content, // Plaintext cho receiver
-                        is_encrypted: false,
-                        is_sender_copy: false,
-                        sender_device_id: null,
-                        encryption_version: 3 // Version 3: ConversationKey architecture
-                    })
-                    .select(`
-                        *,
-                        sender:users(id, name, image)
-                    `)
-                    .single();
-
-                if (receiverError) {
-                    console.log('sendMessage receiverError:', receiverError);
-                    return { success: false, msg: 'Không thể gửi tin nhắn' };
-                }
-
-                // FIX: Tạo sender copy (encrypted) - đảm bảo sender_device_id chính xác
-                const { data: senderMessage, error: senderError } = await supabase
-                    .from('messages')
-                    .insert({
-                        ...data,
-                        content: encryptedContent, // Encrypted cho sender
-                        is_encrypted: true,
-                        encryption_algorithm: 'AES-256-GCM',
-                        is_sender_copy: true,
-                        sender_device_id: deviceId,
-                        // NEW ARCHITECTURE: Không cần encrypted_aes_key_by_pin (PIN layer trong message)
-                        encryption_version: 3 // Version 3: ConversationKey architecture
-                    })
-                    .select(`
-                        *,
-                        sender:users(id, name, image)
-                    `)
-                    .single();
-
-                // FIX: Verify sender_device_id sau khi insert
-                if (senderMessage && senderMessage.sender_device_id) {
-                    if (senderMessage.sender_device_id !== deviceId) {
-                        console.error('[ChatService] ERROR: sender_device_id mismatch!', {
-                            expected: deviceId,
-                            actual: senderMessage.sender_device_id
-                        });
+                    // ✅ YÊU CẦU 1: Nếu conversation có PIN nhưng chưa unlock → return requiresPinUnlock
+                    if (hasPin) {
+                        console.log('[SEND_MESSAGE_BLOCKED] Conversation requires PIN unlock');
+                        return { 
+                            success: false, 
+                            requiresPinUnlock: true, // ✅ Flag để UI hiển thị PIN modal
+                            msg: 'Vui lòng nhập PIN để gửi tin nhắn'
+                        };
                     }
-                }
+                    
+                    // ✅ Nếu conversation chưa có PIN → không thể gửi encrypted message
+                    // (cần setup PIN trước)
+                    console.log('[SEND_MESSAGE_BLOCKED] Conversation chưa có PIN, không thể gửi encrypted message');
+                    return { 
+                        success: false, 
+                        requiresPinSetup: true, // ✅ Flag để UI hiển thị PIN setup modal
+                        msg: 'Vui lòng thiết lập PIN để gửi tin nhắn mã hóa'
+                    };
+                } else {
+                    // ✅ SERVER-SIDE ENCRYPTION: Client encrypt trước khi gửi (tạm thời, sẽ chuyển sang backend encrypt)
+                    const encryptedContent = await encryptionService.encryptMessageWithConversationKey(
+                        data.content,
+                        conversationKey
+                    );
 
-                if (senderError) {
-                    console.log('sendMessage senderError:', senderError);
-                    // Nếu lỗi sender copy, vẫn trả về receiver message
+                    // ✅ AUDIT FIX: Assert content không phải plaintext khi is_encrypted === true
+                    assertEncryptedContentIsCiphertext(encryptedContent, true, 'SEND_MESSAGE');
+
+                    // ✅ CHỈ tạo 1 message: encrypted (ciphertext)
+                    // KHÔNG tạo receiver message plaintext
+                    const { data: message, error } = await supabase
+                        .from('messages')
+                        .insert({
+                            ...data,
+                            content: encryptedContent, // ✅ CIPHERTEXT - đã được encrypt
+                            is_encrypted: true,
+                            encryption_algorithm: 'AES-256-GCM',
+                            is_sender_copy: false, // ✅ Không phải sender_copy, là message chính
+                            sender_device_id: deviceId,
+                            encryption_version: 3 // Version 3: ConversationKey architecture
+                        })
+                        .select(`
+                            *,
+                            sender:users(id, name, image)
+                        `)
+                        .single();
+                    
+                    // ✅ AUDIT FIX: Assert sau insert - message.content phải là ciphertext
+                    if (message) {
+                        assertEncryptedContentIsCiphertext(message.content, message.is_encrypted, 'SEND_MESSAGE_AFTER_INSERT');
+                    }
+
+                    if (error) {
+                        console.log('sendMessage error:', error);
+                        return { success: false, msg: 'Không thể gửi tin nhắn' };
+                    }
+
                     // Cập nhật updated_at của conversation
                     await supabase
                         .from('conversations')
                         .update({ updated_at: new Date().toISOString() })
                         .eq('id', data.conversation_id);
 
-                    return { success: true, data: receiverMessage };
+                    return { success: true, data: message };
                 }
-
-                // Cập nhật updated_at của conversation
-                await supabase
-                    .from('conversations')
-                    .update({ updated_at: new Date().toISOString() })
-                    .eq('id', data.conversation_id);
-
-                // Trả về receiver message (để hiển thị cho sender nếu cần)
-                return { success: true, data: receiverMessage };
             } catch (encryptError) {
                 console.error('Error encrypting message:', encryptError);
-                // Nếu mã hóa lỗi, gửi plaintext như bình thường
-                console.warn('Sending message as plaintext due to encryption error.');
+                // Nếu mã hóa lỗi, KHÔNG gửi message (theo mô hình Server-Side Encryption)
+                return { success: false, msg: 'Không thể mã hóa tin nhắn' };
             }
         }
 
-        // Nếu không phải direct chat hoặc không phải text message → gửi như bình thường (1 message)
+        // ✅ SERVER-SIDE ENCRYPTION: Nếu không phải direct chat hoặc không phải text message
+        // → vẫn gửi nhưng KHÔNG encrypt (non-text messages không cần encrypt)
         const { data: message, error } = await supabase
             .from('messages')
             .insert({
                 ...data,
-                is_encrypted: false,
+                is_encrypted: false, // Non-text messages không cần encrypt
                 is_sender_copy: false,
-                sender_device_id: null
+                sender_device_id: deviceId
             })
             .select(`
                 *,
@@ -784,14 +799,15 @@ export const getMessages = async (conversationId, userId, limit = 50, offset = 0
                 return processed;
             }
 
-            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
-            // Self-healing: Ép thành plaintext nếu flag sai
+            // ✅ SERVER-SIDE ENCRYPTION: Mọi message từ backend đều là ciphertext (đã được backend encrypt)
+            // KHÔNG ép is_encrypted = false, KHÔNG set isDecrypted = true
+            // Giữ nguyên is_encrypted flag từ DB
+            // UI sẽ hiển thị placeholder nếu chưa unlock PIN
             const processed = {
                 ...msg,
-                decryptedContent: msg.content || null,
-                isDecrypted: true,
-                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
-                // Giữ nguyên content vì đây là tin nhắn thường
+                // KHÔNG set is_encrypted = false
+                // KHÔNG set isDecrypted = true
+                // Giữ nguyên metadata từ DB
             };
 
             return processed;
@@ -849,21 +865,7 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
         // KHÔNG decrypt tự động - chỉ trả về encrypted content
         // Decryption sẽ được thực hiện trong UI khi người dùng nhập PIN
         const messagesWithDecryptionState = filteredMessages.map((msg) => {
-            // DEBUG: Log raw message để xác định metadata
-            if (msg.message_type === 'text' && !msg.is_sender_copy) {
-                console.log('[E2EE Debug] getNewMessages() - Raw plaintext message:', JSON.stringify({
-                    id: msg.id,
-                    is_encrypted: msg.is_encrypted,
-                    encrypted_aes_key: msg.encrypted_aes_key,
-                    encrypted_aes_key_by_pin: msg.encrypted_aes_key_by_pin,
-                    encrypted_key_by_device: msg.encrypted_key_by_device,
-                    message_type: msg.message_type,
-                    is_sender_copy: msg.is_sender_copy,
-                    sender_id: msg.sender_id,
-                    content_preview: msg.content ? msg.content.substring(0, 50) : null
-                }, null, 2));
-            }
-
+            // ✅ SERVER-SIDE ENCRYPTION: Mọi message từ backend đều là ciphertext (đã được backend encrypt)
             // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
             if (msg.is_sender_copy === true) {
                 // sender_copy → giữ nguyên metadata, reset decryption state
@@ -879,14 +881,15 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
                     // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
                 };
             }
-            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
-            // Self-healing: Ép thành plaintext nếu flag sai
+            
+            // ✅ SERVER-SIDE ENCRYPTION: Receiver messages từ backend → GIỮ NGUYÊN is_encrypted flag
+            // KHÔNG ép is_encrypted = false, KHÔNG set isDecrypted = true
+            // UI sẽ hiển thị placeholder nếu chưa unlock PIN
             return {
                 ...msg,
-                decryptedContent: msg.content || null,
-                isDecrypted: true,
-                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
-                // Giữ nguyên content vì đây là tin nhắn thường
+                // KHÔNG set is_encrypted = false
+                // KHÔNG set isDecrypted = true
+                // Giữ nguyên metadata từ DB
             };
         });
 
@@ -945,10 +948,51 @@ export const markConversationAsRead = async (conversationId, userId) => {
 
 export const editMessage = async (messageId, content) => {
     try {
+        // ✅ AUDIT FIX: Lấy message hiện tại để kiểm tra is_encrypted
+        const { data: existingMessage, error: fetchError } = await supabase
+            .from('messages')
+            .select('is_encrypted, conversation_id, encryption_version')
+            .eq('id', messageId)
+            .single();
+
+        if (fetchError) {
+            console.log('editMessage fetchError:', fetchError);
+            return { success: false, msg: 'Không thể lấy thông tin tin nhắn' };
+        }
+
+        let contentToSave = content;
+        
+        // ✅ AUDIT FIX: Nếu message encrypted → PHẢI encrypt content trước khi update
+        if (existingMessage.is_encrypted === true) {
+            try {
+                const conversationKeyService = require('./conversationKeyService').default;
+                const encryptionService = require('./encryptionService').default;
+                
+                const conversationKey = await conversationKeyService.getOrCreateConversationKey(existingMessage.conversation_id);
+                
+                if (!conversationKey) {
+                    console.error('[EDIT_MESSAGE] ❌ No ConversationKey, cannot encrypt edited content. Refusing to save plaintext.');
+                    return { success: false, msg: 'Không thể mã hóa tin nhắn đã chỉnh sửa (thiếu ConversationKey)' };
+                }
+                
+                // ✅ Encrypt content trước khi update
+                contentToSave = await encryptionService.encryptMessageWithConversationKey(
+                    content,
+                    conversationKey
+                );
+            } catch (encryptError) {
+                console.error('[EDIT_MESSAGE] ❌ Error encrypting edited content:', encryptError);
+                return { success: false, msg: 'Không thể mã hóa tin nhắn đã chỉnh sửa' };
+            }
+        }
+
+        // ✅ AUDIT FIX: Assert content không phải plaintext khi is_encrypted === true
+        assertEncryptedContentIsCiphertext(contentToSave, existingMessage.is_encrypted, 'EDIT_MESSAGE');
+
         const { data, error } = await supabase
             .from('messages')
             .update({
-                content,
+                content: contentToSave, // ✅ Đã được encrypt nếu is_encrypted === true
                 is_edited: true,
                 edited_at: new Date().toISOString()
             })
@@ -964,7 +1008,7 @@ export const editMessage = async (messageId, content) => {
         return { success: true, data };
     } catch (error) {
         console.log('editMessage error:', error);
-        return { success: false, msg: 'Không thể chỉnh sửa tin nhắn' };
+        return { success: false, msg: error.message || 'Không thể chỉnh sửa tin nhắn' };
     }
 };
 
@@ -1149,5 +1193,173 @@ export const createGroupConversation = async (name, createdBy, memberIds) => {
     } catch (error) {
         console.log('createGroupConversation error:', error);
         return { success: false, msg: 'Không thể tạo nhóm' };
+    }
+};
+
+// ===== PIN-BASED CONVERSATION KEY MANAGEMENT =====
+/**
+ * ✅ CLIENT-SIDE SETUP: Thiết lập ConversationKey cho conversation
+ * Generate conversationKey mới, encrypt bằng master unlock key từ PIN, lưu vào DB
+ * @param {string} conversationId 
+ * @param {string} pin - PIN để derive master unlock key
+ * @returns {Promise<{success: boolean, conversationKey?: Uint8Array, msg?: string}>}
+ */
+export const setupConversationKey = async (conversationId, pin) => {
+    try {
+        console.log('[PIN_SETUP] Starting setup for conversation:', conversationId);
+        
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (!user) {
+            return { success: false, msg: 'User not authenticated' };
+        }
+
+        // Validate PIN format
+        if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
+            return { success: false, msg: 'PIN phải có đúng 6 số' };
+        }
+
+        // 1. Lấy salt từ user_security (dùng pin_salt)
+        const pinService = require('./pinService').default;
+        const pinInfo = await pinService.getPinInfo(user.id);
+        if (!pinInfo || !pinInfo.pin_salt) {
+            return { success: false, msg: 'PIN chưa được thiết lập cho user' };
+        }
+        const salt = pinInfo.pin_salt;
+
+        // 2. Derive master unlock key từ PIN + salt
+        const masterUnlockKey = await pinService.deriveUnlockKey(pin, salt);
+        if (!masterUnlockKey || masterUnlockKey.length !== 32) {
+            return { success: false, msg: 'Lỗi khi derive master unlock key' };
+        }
+
+        // 3. Generate conversation key mới (32 bytes)
+        const conversationKey = await encryptionService.generateAESKey();
+        if (!conversationKey || conversationKey.length !== 32) {
+            return { success: false, msg: 'Lỗi khi generate conversation key' };
+        }
+
+        // 4. Encrypt conversation key bằng master unlock key (format "iv:cipher")
+        const encryptedConversationKey = await encryptionService.encryptAESKeyWithMasterKey(
+            conversationKey,
+            masterUnlockKey
+        );
+
+        // 5. Lưu vào database (không lưu salt, sẽ fallback về pin_salt từ user_security)
+        const { error: updateError } = await supabase
+            .from('conversations')
+            .update({
+                encrypted_conversation_key: encryptedConversationKey,
+                salt: null // Fallback về pin_salt từ user_security
+            })
+            .eq('id', conversationId);
+
+        if (updateError) {
+            console.error('[PIN_SETUP] Error updating conversation:', updateError);
+            return { success: false, msg: 'Không thể lưu ConversationKey' };
+        }
+
+        console.log('[PIN_SETUP_SUCCESS] Successfully setup ConversationKey for conversation', conversationId);
+        return { 
+            success: true, 
+            conversationKey: conversationKey
+        };
+    } catch (error) {
+        console.error('[PIN_SETUP] Exception:', error);
+        return { success: false, msg: 'Lỗi khi thiết lập ConversationKey: ' + error.message };
+    }
+};
+
+/**
+ * ✅ CLIENT-SIDE DECRYPTION: Lấy và decrypt ConversationKey từ backend SAU KHI nhập PIN
+ * CHỈ gọi function này khi user đã nhập PIN
+ * Client derive key từ PIN + salt và decrypt encrypted_conversation_key
+ * @param {string} conversationId 
+ * @param {string} pin - PIN để derive master unlock key
+ * @returns {Promise<{success: boolean, needsSetup?: boolean, conversationKey?: Uint8Array, msg?: string}>}
+ */
+export const fetchConversationKeyAfterPin = async (conversationId, pin) => {
+    try {
+        console.log('[PIN_UNLOCK] Starting unlock for conversation:', conversationId);
+        
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (!user) {
+            return { success: false, msg: 'User not authenticated' };
+        }
+
+        // Validate PIN format
+        if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
+            return { success: false, msg: 'PIN phải có đúng 6 số' };
+        }
+
+        // ✅ CLIENT-SIDE DECRYPTION: Query bảng conversations để lấy encrypted_conversation_key và salt
+        const { data: conversation, error: convError } = await supabase
+            .from('conversations')
+            .select('encrypted_conversation_key, salt')
+            .eq('id', conversationId)
+            .single();
+
+        if (convError || !conversation) {
+            console.error('[PIN_UNLOCK] Error fetching conversation:', convError);
+            return { success: false, msg: 'Không tìm thấy cuộc trò chuyện' };
+        }
+
+        // ✅ Nếu conversation chưa có encrypted_conversation_key → cần setup
+        if (!conversation.encrypted_conversation_key) {
+            console.log('[PIN_SETUP] Conversation chưa có PIN');
+            return { 
+                success: false, 
+                needsSetup: true, 
+                msg: 'Conversation chưa thiết lập PIN' 
+            };
+        }
+
+        // Lấy salt: ưu tiên salt từ conversation, nếu không có thì lấy pin_salt từ user_security
+        let salt = conversation.salt;
+        if (!salt) {
+            const pinService = require('./pinService').default;
+            const pinInfo = await pinService.getPinInfo(user.id);
+            if (!pinInfo || !pinInfo.pin_salt) {
+                return { success: false, msg: 'Không tìm thấy salt để derive key' };
+            }
+            salt = pinInfo.pin_salt;
+        }
+
+        // ✅ CLIENT-SIDE DECRYPTION: Derive master unlock key từ PIN + salt
+        const pinService = require('./pinService').default;
+        const masterUnlockKey = await pinService.deriveUnlockKey(pin, salt);
+        
+        if (!masterUnlockKey || masterUnlockKey.length !== 32) {
+            return { success: false, msg: 'Lỗi khi derive master unlock key' };
+        }
+
+        // ✅ CLIENT-SIDE DECRYPTION: Decrypt encrypted_conversation_key bằng master unlock key
+        let conversationKey;
+        
+        try {
+            // encrypted_conversation_key có format "iv:cipher" base64
+            conversationKey = await encryptionService.decryptAESKeyWithMasterKey(
+                conversation.encrypted_conversation_key,
+                masterUnlockKey
+            );
+        } catch (decryptError) {
+            console.error('[PIN_UNLOCK_FAIL] Error decrypting conversation key:', decryptError);
+            return { success: false, msg: 'PIN không đúng hoặc không thể mở cuộc trò chuyện' };
+        }
+
+        if (!conversationKey || conversationKey.length !== 32) {
+            console.error('[PIN_UNLOCK_FAIL] Invalid conversation key after decryption');
+            return { success: false, msg: 'PIN không đúng hoặc không thể mở cuộc trò chuyện' };
+        }
+
+        console.log('[PIN_UNLOCK_SUCCESS] Successfully decrypted ConversationKey for conversation', conversationId);
+        return { 
+            success: true, 
+            conversationKey: conversationKey
+        };
+    } catch (error) {
+        console.error('[PIN_UNLOCK] Exception:', error);
+        return { success: false, msg: 'Lỗi khi lấy ConversationKey: ' + error.message };
     }
 };
