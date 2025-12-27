@@ -40,9 +40,16 @@ const Login = () => {
         try {
             const hasHardware = await LocalAuthentication.hasHardwareAsync();
             const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-            setBiometricAvailable(hasHardware && isEnrolled);
+            const available = hasHardware && isEnrolled;
+            console.log('[BIOMETRIC_CHECK]', {
+                hasHardware,
+                isEnrolled,
+                available
+            });
+            setBiometricAvailable(available);
         } catch (error) {
-            console.log('Biometric check error:', error);
+            console.error('[BIOMETRIC_CHECK] Error:', error);
+            setBiometricAvailable(false);
         }
     };
 
@@ -50,9 +57,16 @@ const Login = () => {
         try {
             const savedEmail = await AsyncStorage.getItem('saved_email');
             const savedPassword = await AsyncStorage.getItem('saved_password');
-            setHasSavedCredentials(!!(savedEmail && savedPassword));
+            const hasCredentials = !!(savedEmail && savedPassword);
+            console.log('[CREDENTIALS_CHECK]', {
+                hasEmail: !!savedEmail,
+                hasPassword: !!savedPassword,
+                hasCredentials
+            });
+            setHasSavedCredentials(hasCredentials);
         } catch (error) {
-            console.log('Check saved credentials error:', error);
+            console.error('[CREDENTIALS_CHECK] Error:', error);
+            setHasSavedCredentials(false);
         }
     };
     const [microsoftLoading, setMicrosoftLoading] = useState(false);
@@ -155,7 +169,21 @@ if (data.session && data.user) {
             const savedPassword = await AsyncStorage.getItem('saved_password');
 
             if (!savedEmail || !savedPassword) {
-                Alert.alert('Thông báo', 'Vui lòng đăng nhập bằng mật khẩu ít nhất một lần trước khi sử dụng vân tay');
+                Alert.alert('Thông báo', 'Yêu cầu đăng nhập bằng mật khẩu lần đầu tiên');
+                return;
+            }
+
+            // Kiểm tra lại biometric availability khi người dùng nhấn nút
+            const hasHardware = await LocalAuthentication.hasHardwareAsync();
+            const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+            if (!hasHardware) {
+                Alert.alert('Thông báo', 'Thiết bị của bạn không hỗ trợ vân tay hoặc Face ID');
+                return;
+            }
+
+            if (!isEnrolled) {
+                Alert.alert('Thông báo', 'Vui lòng thiết lập vân tay hoặc Face ID trong cài đặt thiết bị trước khi sử dụng tính năng này');
                 return;
             }
 
@@ -291,24 +319,22 @@ if (data.session && data.user) {
                             )}
                         </Pressable>
 
-                        {/* Nút đăng nhập bằng vân tay */}
-                        {biometricAvailable && hasSavedCredentials && (
-                            <View style={styles.biometricContainer}>
-                                <View style={styles.divider}>
-                                    <View style={styles.dividerLine} />
-                                    <Text style={styles.dividerText}>Hoặc</Text>
-                                    <View style={styles.dividerLine} />
-                                </View>
-                                <TouchableOpacity
-                                    style={styles.biometricButton}
-                                    onPress={loginWithBiometric}
-                                    disabled={loading}
-                                >
-                                    <Icon name="fingerprint" size={30} strokeWidth={1.6} color={theme.colors.primary} />
-                                    <Text style={styles.biometricText}>Đăng nhập bằng vân tay</Text>
-                                </TouchableOpacity>
+                        {/* Nút đăng nhập bằng vân tay - Luôn hiển thị */}
+                        <View style={styles.biometricContainer}>
+                            <View style={styles.divider}>
+                                <View style={styles.dividerLine} />
+                                <Text style={styles.dividerText}>Hoặc</Text>
+                                <View style={styles.dividerLine} />
                             </View>
-                        )}
+                            <TouchableOpacity
+                                style={styles.biometricButton}
+                                onPress={loginWithBiometric}
+                                disabled={loading}
+                            >
+                                <Icon name="fingerprint" size={30} strokeWidth={1.6} color={theme.colors.primary} />
+                                <Text style={styles.biometricText}>Đăng nhập bằng vân tay</Text>
+                            </TouchableOpacity>
+                        </View>
 
                     </View>
                     {/* footer */}

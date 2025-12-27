@@ -8,6 +8,7 @@ class DeviceService {
     constructor() {
         this.deviceId = null;
         this.devicePrivateKey = null;
+        this.currentUserId = null; // Track user ID của private key hiện tại
     }
 
     // Generate device ID: device_${timestamp}_${random}
@@ -182,8 +183,16 @@ class DeviceService {
     // Lấy hoặc tạo private key cho device
     // QUAN TRỌNG: Không bao giờ regenerate privateKey nếu đã tồn tại
     async getOrCreatePrivateKey(userId) {
-        if (this.devicePrivateKey) {
+        // CRITICAL: Kiểm tra xem private key trong memory có đúng cho user hiện tại không
+        // Nếu userId thay đổi, cần load lại key mới từ SecureStore
+        if (this.devicePrivateKey && this.currentUserId === userId) {
             return this.devicePrivateKey;
+        }
+        
+        // User khác hoặc chưa có key → clear cache và load lại
+        if (this.currentUserId !== userId) {
+            this.devicePrivateKey = null;
+            this.currentUserId = userId;
         }
 
         try {
@@ -294,7 +303,9 @@ class DeviceService {
                 throw new Error('Private key is null or empty after loading');
             }
 
+            // Cache private key vào memory và lưu userId
             this.devicePrivateKey = privateKey;
+            this.currentUserId = userId;
             return privateKey;
         } catch (error) {
             console.error('[DeviceService] Error getting private key:', error);
