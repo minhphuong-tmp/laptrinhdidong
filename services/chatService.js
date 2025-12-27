@@ -636,12 +636,19 @@ export const sendMessage = async (data) => {
                     throw new Error('Receiver chưa có key pair. Vui lòng yêu cầu receiver đăng nhập lại để tạo key pair.');
                 }
 
+                console.log(`[sendMessage] 📨 Gửi tin nhắn cho receiver ${receiverId}, encrypt cho ${validRecipientDevices.length} thiết bị`);
+                console.log(`[sendMessage] 📋 Danh sách thiết bị receiver:`, validRecipientDevices.map(d => ({
+                    device_id: d.device_id,
+                    device_name: d.device_name || 'N/A'
+                })));
+
                 // 5. Mã hóa cho receiver với TẤT CẢ devices (mỗi device có encrypted_key riêng)
                 const encryptedForReceiver = await encryptionService.encryptForReceiver(
                     data.content,
                     validRecipientDevices.map(device => ({
                         device_id: device.device_id,
-                        public_key: device.public_key
+                        public_key: device.public_key,
+                        device_name: device.device_name
                     }))
                 );
 
@@ -676,13 +683,25 @@ export const sendMessage = async (data) => {
                 }
 
                 // 7. Lưu plaintext vào localStorage với metadata
-                await localMessagePlaintextService.saveMessagePlaintext(message.id, data.content, {
+                console.log(`[SEND_MESSAGE] 💾 Lưu tin nhắn vào localStorage:`, {
+                    messageId: message.id,
+                    conversationId: data.conversation_id,
+                    senderId: data.sender_id,
+                    contentLength: data.content?.length || 0,
+                    contentPreview: data.content?.substring(0, 50) || ''
+                });
+                const saveResult = await localMessagePlaintextService.saveMessagePlaintext(message.id, data.content, {
                     conversation_id: data.conversation_id,
                     sender_id: data.sender_id,
                     created_at: message.created_at,
                     message_type: data.message_type || 'text',
                     is_encrypted: true
                 });
+                if (saveResult) {
+                    console.log(`[SEND_MESSAGE] ✅ Đã lưu tin nhắn vào localStorage thành công: messageId=${message.id}`);
+                } else {
+                    console.error(`[SEND_MESSAGE] ❌ Lỗi khi lưu tin nhắn vào localStorage: messageId=${message.id}`);
+                }
 
                 // 8. Cập nhật updated_at của conversation
                 await supabase

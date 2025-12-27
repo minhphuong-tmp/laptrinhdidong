@@ -9,3 +9,7 @@ DROP INDEX IF EXISTS idx_messages_encrypted_for_receiver;
 COMMENT ON COLUMN messages.encrypted_for_receiver IS 'Message encrypted with receiver public key (RSA). Contains JSON: {ciphertext, encrypted_keys: [{device_id, encrypted_key}]}. Not indexed due to size limitations.';
 
 
+
+
+
+

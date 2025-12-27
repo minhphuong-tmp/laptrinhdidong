@@ -427,16 +427,6 @@ class EncryptionService {
             // Parse format "iv:cipher"
             const parts = encryptedData.split(':');
             if (parts.length !== 2) {
-                // Log chi tiết để debug
-                if (__DEV__) {
-                    console.error('[EncryptionService] Invalid encrypted data format:', {
-                        expected: 'iv:cipher (2 parts)',
-                        got: `${parts.length} parts`,
-                        dataLength: encryptedData.length,
-                        dataPreview: encryptedData.substring(0, 100),
-                        hasColon: encryptedData.includes(':')
-                    });
-                }
                 throw new Error(`Invalid encrypted data format: expected "iv:cipher", got ${parts.length} parts`);
             }
 
@@ -962,7 +952,11 @@ class EncryptionService {
                 throw new Error(`RSA decryption failed: ${e.message}`);
             }
         } catch (error) {
-            console.error('Error decrypting AES key with RSA:', error);
+            // Tắt log error vì lỗi này thường xảy ra khi tin nhắn được mã hóa cho device khác
+            // Không ảnh hưởng chức năng - chỉ log trong dev mode nếu cần debug
+            if (__DEV__) {
+                // console.warn('RSA decryption failed (likely key mismatch - message encrypted for different device):', error.message);
+            }
             throw error;
         }
     }
@@ -1889,14 +1883,29 @@ class EncryptionService {
             const ciphertext = await this.encryptAES(plaintext, conversationKey);
 
             // Encrypt conversation_key for EACH device using its public key
+            console.log(`[encryptForReceiver] 🔐 Bắt đầu mã hóa cho ${receiverDevices.length} thiết bị của receiver`);
+            console.log(`[encryptForReceiver] 📋 Danh sách devices:`, receiverDevices.map(d => ({
+                device_id: d.device_id,
+                device_name: d.device_name || 'N/A',
+                has_public_key: !!d.public_key,
+                public_key_length: d.public_key?.length || 0
+            })));
+
             const encryptedKeys = await Promise.all(
-                receiverDevices.map(async (device) => {
+                receiverDevices.map(async (device, index) => {
                     if (!device.device_id || !device.public_key) {
                         throw new Error(`Device missing device_id or public_key: ${JSON.stringify(device)}`);
                     }
 
                     // Encrypt conversation_key with device's RSA public key
                     const encryptedKey = await this.encryptAESKeyWithRSA(conversationKey, device.public_key);
+                    
+                    console.log(`[encryptForReceiver] ✅ Device ${index + 1}/${receiverDevices.length}:`, {
+                        device_id: device.device_id,
+                        device_name: device.device_name || 'N/A',
+                        encrypted_key_length: encryptedKey.length,
+                        encrypted_key_preview: encryptedKey.substring(0, 50) + '...'
+                    });
 
                     return {
                         device_id: device.device_id,
@@ -1911,7 +1920,18 @@ class EncryptionService {
                 encrypted_keys: encryptedKeys
             };
 
-            return JSON.stringify(payload);
+            const payloadString = JSON.stringify(payload);
+            console.log(`[encryptForReceiver] 🎯 Hoàn thành mã hóa:`, {
+                total_devices: encryptedKeys.length,
+                ciphertext_length: ciphertext.length,
+                payload_size: payloadString.length,
+                devices_info: encryptedKeys.map(e => ({
+                    device_id: e.device_id,
+                    encrypted_key_length: e.encrypted_key.length
+                }))
+            });
+
+            return payloadString;
         } catch (error) {
             console.error('[EncryptionService] Error encrypting for receiver:', error);
             throw error;
@@ -1973,37 +1993,32 @@ class EncryptionService {
                 return null;
             }
 
-            // Find encrypted_key for current device
+            // Find encrypted_key for current device (exact match only)
             const deviceKeyEntry = payload.encrypted_keys.find(
                 entry => entry.device_id === currentDeviceId
             );
 
             if (!deviceKeyEntry || !deviceKeyEntry.encrypted_key) {
-                if (__DEV__) {
-                    console.warn('[EncryptionService] No encrypted_key found for device:', currentDeviceId);
-                }
+                // Device không có trong encrypted_keys → không thể decrypt
+                // Đây là expected behavior (device mới hoặc device khác)
                 return null;
             }
 
             // Decrypt conversation_key with RSA private key
             const conversationKey = await this.decryptAESKeyWithRSA(deviceKeyEntry.encrypted_key, privateKey);
             if (!conversationKey || conversationKey.length !== 32) {
-                if (__DEV__) {
-                    console.warn('[EncryptionService] Failed to decrypt conversation key:', {
-                        hasKey: !!conversationKey,
-                        keyLength: conversationKey?.length || 0
-                    });
-                }
+                // Key pair không khớp → không thể decrypt
                 return null;
             }
 
             // Decrypt ciphertext with conversation_key
             const plaintext = await this.decryptAES(payload.ciphertext, conversationKey);
+            if (!plaintext || plaintext.trim() === '') {
+                return null;
+            }
             return plaintext;
         } catch (error) {
-            if (__DEV__) {
-                console.error('[EncryptionService] Error decrypting for receiver:', error);
-            }
+            // Decrypt failed → return null (không log error để xử lý)
             return null;
         }
     }
@@ -2065,6 +2080,7 @@ class EncryptionService {
 }
 
 export default new EncryptionService();
+
 
 
 

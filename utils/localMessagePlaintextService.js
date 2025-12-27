@@ -30,8 +30,19 @@ class LocalMessagePlaintextService {
             };
             await AsyncStorage.setItem(key, JSON.stringify(data));
             
-            if (__DEV__) {
-                console.log(`[LocalMessagePlaintext] Saved plaintext for message ${messageId}`, { conversationId: metadata.conversation_id });
+            // Log để verify đã lưu thành công
+            const verifyData = await AsyncStorage.getItem(key);
+            if (verifyData) {
+                console.log(`[LocalMessagePlaintext] ✅ Đã lưu thành công vào localStorage:`, {
+                    messageId: messageId,
+                    key: key,
+                    conversationId: metadata.conversation_id,
+                    plaintextLength: plaintext.length,
+                    plaintextPreview: plaintext.substring(0, 50),
+                    savedAt: data.saved_at
+                });
+            } else {
+                console.error(`[LocalMessagePlaintext] ❌ Lưu thất bại - không tìm thấy data sau khi save: messageId=${messageId}`);
             }
             return true;
         } catch (error) {

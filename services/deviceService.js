@@ -422,8 +422,7 @@ class DeviceService {
                 .eq('user_id', userId)
                 .not('public_key', 'is', null);
 
-            // Kiểm tra xem có field revoked/is_revoked không
-            // Nếu có thì filter thêm
+            // Lấy tất cả devices có public_key (không filter revoked vì không có chức năng này)
             const { data, error } = await query;
 
             if (error) {
