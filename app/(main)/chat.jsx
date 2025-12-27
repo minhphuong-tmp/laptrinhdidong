@@ -922,7 +922,8 @@ const ChatScreen = () => {
 
         // Nếu PIN unlocked: Load TẤT CẢ messages từ DB (cả sent và received)
         // Nếu PIN locked: Load như cũ (received từ DB, sent từ local)
-        const isPinUnlockedState = pinUnlocked;
+        // CRITICAL: Check pinService.isUnlocked() thay vì state pinUnlocked để tránh race condition
+        const isPinUnlockedState = pinService.isUnlocked() || pinUnlocked;
         let masterKey = null;
         if (isPinUnlockedState) {
             try {
@@ -943,7 +944,7 @@ const ChatScreen = () => {
             
             setLoading(false);
 
-            if (res.success) {
+            if (res.success && res.data && Array.isArray(res.data)) {
                 // Xử lý TẤT CẢ messages: decrypt received bằng private key, decrypt sent bằng master key
                 let privateKey = null;
                 try {
@@ -952,60 +953,75 @@ const ChatScreen = () => {
                     console.error('[LOAD_MESSAGES] Error getting private key:', error);
                 }
 
-                const allMessages = await Promise.all(res.data.map(async (msg) => {
-                    const isSentMessage = msg.sender_id === user.id;
-                    const isTextMessage = msg.message_type === 'text';
-                    const isEncrypted = msg.is_encrypted === true;
-
-                    // Tin nhắn NHẬN ĐƯỢC: Decrypt với private key
-                    if (!isSentMessage && isTextMessage && isEncrypted && msg.encrypted_for_receiver && privateKey) {
+                let allMessages = [];
+                try {
+                    const messagesPromise = res.data.map(async (msg) => {
                         try {
-                            const currentDeviceId = await deviceService.getOrCreateDeviceId();
-                            if (!currentDeviceId) {
-                                return null; // Không có device ID → không hiển thị
+                            const isSentMessage = msg.sender_id === user.id;
+                            const isTextMessage = msg.message_type === 'text';
+                            const isEncrypted = msg.is_encrypted === true;
+
+                            // Tin nhắn NHẬN ĐƯỢC: Decrypt với private key
+                            if (!isSentMessage && isTextMessage && isEncrypted && msg.encrypted_for_receiver && privateKey) {
+                                try {
+                                    const currentDeviceId = await deviceService.getOrCreateDeviceId();
+                                    if (!currentDeviceId) {
+                                        return null; // Không có device ID → không hiển thị
+                                    }
+                                    const plaintext = await encryptionService.decryptForReceiver(msg.encrypted_for_receiver, currentDeviceId, privateKey);
+                                    if (plaintext && plaintext.trim() !== '') {
+                                        return {
+                                            ...msg,
+                                            runtime_plain_text: plaintext,
+                                            hasValidPlaintext: true,
+                                            decryption_error: false
+                                        };
+                                    }
+                                    // Decrypt thất bại → return null để filter ra
+                                    return null;
+                                } catch (error) {
+                                    // Decrypt failed → return null để filter ra
+                                    return null;
+                                }
                             }
-                            const plaintext = await encryptionService.decryptForReceiver(msg.encrypted_for_receiver, currentDeviceId, privateKey);
-                            if (plaintext && plaintext.trim() !== '') {
-                                return {
-                                    ...msg,
-                                    runtime_plain_text: plaintext,
-                                    hasValidPlaintext: true,
-                                    decryption_error: false
-                                };
+
+                            // Tin nhắn ĐÃ GỬI: Decrypt với master key (PIN)
+                            if (isSentMessage && isTextMessage && isEncrypted && msg.encrypted_for_sync && masterKey) {
+                                try {
+                                    const plaintext = await encryptionService.decryptForSync(msg.encrypted_for_sync, masterKey);
+                                    if (plaintext && plaintext.trim() !== '') {
+                                        console.log(`[LOAD_MESSAGES] ✓ Decrypted sent message ${msg.id} with master key (PIN) from DB`);
+                                        return {
+                                            ...msg,
+                                            runtime_plain_text: plaintext,
+                                            hasValidPlaintext: true,
+                                            decryption_error: false
+                                        };
+                                    }
+                                    // Decrypt thất bại → return null để filter ra
+                                    return null;
+                                } catch (error) {
+                                    console.error(`[LOAD_MESSAGES] ✗ Error decrypting sent message ${msg.id} with master key:`, error);
+                                    // Decrypt error → return null để filter ra
+                                    return null;
+                                }
                             }
-                            // Decrypt thất bại → return null để filter ra
-                            return null;
+
+                            // Tin nhắn không encrypted hoặc không phải text → giữ nguyên (hiển thị bình thường)
+                            return msg;
                         } catch (error) {
-                            // Decrypt failed → return null để filter ra
+                            console.error(`[LOAD_MESSAGES] ✗ Error processing message ${msg?.id}:`, error);
                             return null;
                         }
-                    }
-
-                    // Tin nhắn ĐÃ GỬI: Decrypt với master key (PIN)
-                    if (isSentMessage && isTextMessage && isEncrypted && msg.encrypted_for_sync && masterKey) {
-                        try {
-                            const plaintext = await encryptionService.decryptForSync(msg.encrypted_for_sync, masterKey);
-                            if (plaintext && plaintext.trim() !== '') {
-                                console.log(`[LOAD_MESSAGES] ✓ Decrypted sent message ${msg.id} with master key (PIN) from DB`);
-                                return {
-                                    ...msg,
-                                    runtime_plain_text: plaintext,
-                                    hasValidPlaintext: true,
-                                    decryption_error: false
-                                };
-                            }
-                            // Decrypt thất bại → return null để filter ra
-                            return null;
-                        } catch (error) {
-                            console.error(`[LOAD_MESSAGES] ✗ Error decrypting sent message ${msg.id} with master key:`, error);
-                            // Decrypt error → return null để filter ra
-                            return null;
-                        }
-                    }
-
-                    // Tin nhắn không encrypted hoặc không phải text → giữ nguyên (hiển thị bình thường)
-                    return msg;
-                })).filter(msg => msg !== null); // Filter ra các message không decrypt được
+                    });
+                    
+                    const messagesResult = await Promise.all(messagesPromise);
+                    // Filter ra các message không decrypt được (null)
+                    allMessages = Array.isArray(messagesResult) ? messagesResult.filter(msg => msg !== null) : [];
+                } catch (error) {
+                    console.error('[LOAD_MESSAGES] ✗ Error in Promise.all:', error);
+                    allMessages = [];
+                }
 
                 // Sort theo created_at (mới nhất trước)
                 const sortedMessages = allMessages.sort((a, b) => {
@@ -1025,6 +1041,15 @@ const ChatScreen = () => {
 
                 // Reset image loading states when loading messages
                 setImageLoading({});
+            } else {
+                // res.data không hợp lệ hoặc không phải array
+                console.error('[LOAD_MESSAGES] Invalid response data:', {
+                    success: res.success,
+                    hasData: !!res.data,
+                    isArray: Array.isArray(res.data),
+                    dataType: typeof res.data
+                });
+                setMessages([]);
             }
             return; // Kết thúc function sớm nếu PIN unlocked
         }
