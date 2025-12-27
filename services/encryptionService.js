@@ -427,6 +427,16 @@ class EncryptionService {
             // Parse format "iv:cipher"
             const parts = encryptedData.split(':');
             if (parts.length !== 2) {
+                // Log chi tiết để debug
+                if (__DEV__) {
+                    console.error('[EncryptionService] Invalid encrypted data format:', {
+                        expected: 'iv:cipher (2 parts)',
+                        got: `${parts.length} parts`,
+                        dataLength: encryptedData.length,
+                        dataPreview: encryptedData.substring(0, 100),
+                        hasColon: encryptedData.includes(':')
+                    });
+                }
                 throw new Error(`Invalid encrypted data format: expected "iv:cipher", got ${parts.length} parts`);
             }
 
@@ -1853,10 +1863,208 @@ class EncryptionService {
     clearCache() {
         this.keyCache.clear();
     }
+
+    // ===== Receiver Encryption (RSA + AES) =====
+
+    /**
+     * Encrypt message for receiver using ALL receiver devices' public keys (RSA)
+     * Each device gets its own encrypted conversation_key
+     * @param {string} plaintext - Plaintext message
+     * @param {Array<{device_id: string, public_key: string}>} receiverDevices - Array of receiver devices with public keys
+     * @returns {Promise<string>} JSON string with format: {ciphertext: "...", encrypted_keys: [{device_id, encrypted_key}]}
+     */
+    async encryptForReceiver(plaintext, receiverDevices) {
+        try {
+            if (!plaintext || typeof plaintext !== 'string') {
+                throw new Error('Plaintext must be a non-empty string');
+            }
+            if (!receiverDevices || !Array.isArray(receiverDevices) || receiverDevices.length === 0) {
+                throw new Error('Receiver devices array is required and must not be empty');
+            }
+
+            // Generate AES-256 conversation key for this message
+            const conversationKey = await this.generateAESKey();
+
+            // Encrypt plaintext with conversation key (AES-256-GCM)
+            const ciphertext = await this.encryptAES(plaintext, conversationKey);
+
+            // Encrypt conversation_key for EACH device using its public key
+            const encryptedKeys = await Promise.all(
+                receiverDevices.map(async (device) => {
+                    if (!device.device_id || !device.public_key) {
+                        throw new Error(`Device missing device_id or public_key: ${JSON.stringify(device)}`);
+                    }
+
+                    // Encrypt conversation_key with device's RSA public key
+                    const encryptedKey = await this.encryptAESKeyWithRSA(conversationKey, device.public_key);
+
+                    return {
+                        device_id: device.device_id,
+                        encrypted_key: encryptedKey // Base64 string
+                    };
+                })
+            );
+
+            // Return JSON format
+            const payload = {
+                ciphertext: ciphertext, // Base64 string
+                encrypted_keys: encryptedKeys
+            };
+
+            return JSON.stringify(payload);
+        } catch (error) {
+            console.error('[EncryptionService] Error encrypting for receiver:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Decrypt message encrypted for receiver using current device's private key
+     * @param {string} encryptedForReceiver - JSON string with format: {ciphertext: "...", encrypted_keys: [{device_id, encrypted_key}]}
+     * @param {string} currentDeviceId - Device ID of current device
+     * @param {string} privateKey - RSA private key (PEM format) of current device
+     * @returns {Promise<string|null>} Decrypted plaintext or null if decryption fails
+     */
+    async decryptForReceiver(encryptedForReceiver, currentDeviceId, privateKey) {
+        try {
+            if (!encryptedForReceiver || typeof encryptedForReceiver !== 'string') {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Invalid encryptedForReceiver input');
+                }
+                return null;
+            }
+            if (!currentDeviceId || typeof currentDeviceId !== 'string') {
+                throw new Error('Current device ID is required');
+            }
+            if (!privateKey || typeof privateKey !== 'string') {
+                throw new Error('Private key is required');
+            }
+
+            // Parse JSON format
+            let payload;
+            try {
+                payload = JSON.parse(encryptedForReceiver);
+            } catch (parseError) {
+                // Backward compatibility: Try old format "encryptedAESKey:encryptedContent"
+                const parts = encryptedForReceiver.split(':');
+                if (parts.length === 2) {
+                    const [encryptedAESKeyBase64, encryptedContentBase64] = parts;
+                    const aesKey = await this.decryptAESKeyWithRSA(encryptedAESKeyBase64, privateKey);
+                    if (!aesKey || aesKey.length !== 32) {
+                        return null;
+                    }
+                    return await this.decryptAES(encryptedContentBase64, aesKey);
+                }
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Invalid encryptedForReceiver format (not JSON and not old format)');
+                }
+                return null;
+            }
+
+            // Validate payload structure
+            if (!payload.ciphertext || !payload.encrypted_keys || !Array.isArray(payload.encrypted_keys)) {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Invalid payload structure:', {
+                        hasCiphertext: !!payload.ciphertext,
+                        hasEncryptedKeys: !!payload.encrypted_keys,
+                        isArray: Array.isArray(payload.encrypted_keys)
+                    });
+                }
+                return null;
+            }
+
+            // Find encrypted_key for current device
+            const deviceKeyEntry = payload.encrypted_keys.find(
+                entry => entry.device_id === currentDeviceId
+            );
+
+            if (!deviceKeyEntry || !deviceKeyEntry.encrypted_key) {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] No encrypted_key found for device:', currentDeviceId);
+                }
+                return null;
+            }
+
+            // Decrypt conversation_key with RSA private key
+            const conversationKey = await this.decryptAESKeyWithRSA(deviceKeyEntry.encrypted_key, privateKey);
+            if (!conversationKey || conversationKey.length !== 32) {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Failed to decrypt conversation key:', {
+                        hasKey: !!conversationKey,
+                        keyLength: conversationKey?.length || 0
+                    });
+                }
+                return null;
+            }
+
+            // Decrypt ciphertext with conversation_key
+            const plaintext = await this.decryptAES(payload.ciphertext, conversationKey);
+            return plaintext;
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[EncryptionService] Error decrypting for receiver:', error);
+            }
+            return null;
+        }
+    }
+
+    // ===== PIN-based Sync Encryption =====
+
+    /**
+     * Encrypt message for sync using master key (AES-256-GCM)
+     * @param {string} plaintext - Plaintext message
+     * @param {Uint8Array} masterKey - Master key derived from PIN (32 bytes)
+     * @returns {Promise<string>} Base64 encoded encrypted message
+     */
+    async encryptForSync(plaintext, masterKey) {
+        try {
+            if (!plaintext || typeof plaintext !== 'string') {
+                throw new Error('Plaintext must be a non-empty string');
+            }
+            if (!(masterKey instanceof Uint8Array) || masterKey.length !== 32) {
+                throw new Error('Master key must be Uint8Array of length 32');
+            }
+
+            // Encrypt plaintext directly with master key (AES-256-GCM)
+            const encryptedContent = await this.encryptAES(plaintext, masterKey);
+            return encryptedContent; // Base64 string (IV + ciphertext)
+        } catch (error) {
+            console.error('[EncryptionService] Error encrypting for sync:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Decrypt message encrypted for sync using master key (AES-256-GCM)
+     * @param {string} encryptedForSync - Base64 encoded encrypted message
+     * @param {Uint8Array} masterKey - Master key derived from PIN (32 bytes)
+     * @returns {Promise<string|null>} Decrypted plaintext or null if decryption fails
+     */
+    async decryptForSync(encryptedForSync, masterKey) {
+        try {
+            if (!encryptedForSync || typeof encryptedForSync !== 'string') {
+                if (__DEV__) {
+                    console.warn('[EncryptionService] Invalid encryptedForSync input');
+                }
+                return null;
+            }
+            if (!(masterKey instanceof Uint8Array) || masterKey.length !== 32) {
+                throw new Error('Master key must be Uint8Array of length 32');
+            }
+
+            // Decrypt content directly with master key (AES-256-GCM)
+            const plaintext = await this.decryptAES(encryptedForSync, masterKey);
+            return plaintext;
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[EncryptionService] Error decrypting for sync:', error);
+            }
+            return null;
+        }
+    }
 }
 
 export default new EncryptionService();
-
 
 
 

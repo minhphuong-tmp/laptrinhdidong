@@ -61,10 +61,66 @@ export const AuthProvider = ({ children }) => {
                 } else if (event === 'SIGNED_IN' && session?.user) {
                     console.log('User signed in:', session.user.email);
                     setUser(session.user);
-                    setLoading(false);
-                    // Redirect về home
+                    setLoading(false); // QUAN TRỌNG: Set loading false TRƯỚC khi chạy async operations
+                    
+                    // Redirect về home ngay lập tức (không chờ async operations)
                     console.log('Redirecting to home...');
                     router.replace('/(main)/home');
+                    
+                    // Chạy các async operations sau (không block UI)
+                    // Sử dụng setTimeout để không block main thread
+                    setTimeout(async () => {
+                        // Kiểm tra PIN đã thiết lập chưa
+                        try {
+                            const pinService = require('../services/pinService').default;
+                            const isPinSet = await pinService.isPinSet(session.user.id);
+                            if (isPinSet) {
+                                console.log('🔐 [AUTH_CONTEXT] PIN Status: ĐÃ THIẾT LẬP PIN');
+                            } else {
+                                console.log('🔐 [AUTH_CONTEXT] PIN Status: Chưa thiết lập PIN');
+                            }
+                        } catch (pinError) {
+                            console.warn('⚠️ [AUTH_CONTEXT] Could not check PIN status:', pinError.message);
+                        }
+                        
+                        // Đảm bảo user có key pair (tự động tạo nếu chưa có)
+                        try {
+                            console.log('🔑 [AUTH_CONTEXT] Ensuring key pair for user:', session.user.id);
+                            const deviceService = require('../services/deviceService').default;
+                            const privateKey = await deviceService.getOrCreatePrivateKey(session.user.id);
+                            const deviceId = await deviceService.getOrCreateDeviceId();
+                            
+                            // Lấy public key từ database để log (sau khi getOrCreatePrivateKey đã tự động tạo nếu thiếu)
+                            const { data: device } = await supabase
+                                .from('user_devices')
+                                .select('public_key')
+                                .eq('user_id', session.user.id)
+                                .eq('device_id', deviceId)
+                                .single();
+                            
+                            if (device && device.public_key) {
+                                console.log('✅ [AUTH_CONTEXT] Key pair verified:');
+                                console.log('  - User ID:', session.user.id);
+                                console.log('  - Device ID:', deviceId);
+                                console.log('  - Private Key exists: YES');
+                                console.log('  - Public Key exists: YES');
+                                console.log('  - Public Key (first 50 chars):', device.public_key.substring(0, 50) + '...');
+                            } else {
+                                // Nếu vẫn không có public key sau khi getOrCreatePrivateKey → log warning
+                                console.warn('⚠️ [AUTH_CONTEXT] Key pair creation may have failed. Private key exists but public key not found in database.');
+                                // Thử tạo lại một lần nữa
+                                try {
+                                    await deviceService.getOrCreatePrivateKey(session.user.id);
+                                    console.log('✅ [AUTH_CONTEXT] Retried key pair creation');
+                                } catch (retryError) {
+                                    console.error('❌ [AUTH_CONTEXT] Retry failed:', retryError.message);
+                                }
+                            }
+                        } catch (keyError) {
+                            // Không block login nếu tạo key pair thất bại (có thể do E2E chưa available)
+                            console.warn('[AuthContext] ⚠️ Could not ensure key pair:', keyError.message);
+                        }
+                    }, 100); // Delay 100ms để không block UI
                 } else if (event === 'TOKEN_REFRESHED' && session?.user) {
                     console.log('Token refreshed for user:', session.user.email);
                     setUser(session.user);
@@ -85,9 +141,65 @@ export const AuthProvider = ({ children }) => {
         };
     }, [router]);
 
-    const setAuth = authUser => {
+    const setAuth = async authUser => {
         console.log('setAuth called with:', authUser?.email);
         setUser(authUser);
+        
+        // Chạy các async operations sau (không block UI)
+        // Sử dụng setTimeout để không block main thread
+        if (authUser?.id) {
+            setTimeout(async () => {
+                // Kiểm tra PIN đã thiết lập chưa
+                try {
+                    const pinService = require('../services/pinService').default;
+                    const isPinSet = await pinService.isPinSet(authUser.id);
+                    if (isPinSet) {
+                        console.log('🔐 [AUTH_CONTEXT] PIN Status: ĐÃ THIẾT LẬP PIN');
+                    } else {
+                        console.log('🔐 [AUTH_CONTEXT] PIN Status: Chưa thiết lập PIN');
+                    }
+                } catch (pinError) {
+                    console.warn('⚠️ [AUTH_CONTEXT] Could not check PIN status:', pinError.message);
+                }
+                
+                try {
+                    console.log('🔑 [AUTH_CONTEXT] Ensuring key pair via setAuth for user:', authUser.id);
+                    const deviceService = require('../services/deviceService').default;
+                    const privateKey = await deviceService.getOrCreatePrivateKey(authUser.id);
+                    const deviceId = await deviceService.getOrCreateDeviceId();
+                    
+                    // Lấy public key từ database để log (sau khi getOrCreatePrivateKey đã tự động tạo nếu thiếu)
+                    const { data: device } = await supabase
+                        .from('user_devices')
+                        .select('public_key')
+                        .eq('user_id', authUser.id)
+                        .eq('device_id', deviceId)
+                        .single();
+                    
+                    if (device && device.public_key) {
+                        console.log('✅ [AUTH_CONTEXT] Key pair verified via setAuth:');
+                        console.log('  - User ID:', authUser.id);
+                        console.log('  - Device ID:', deviceId);
+                        console.log('  - Private Key exists: YES');
+                        console.log('  - Public Key exists: YES');
+                        console.log('  - Public Key (first 50 chars):', device.public_key.substring(0, 50) + '...');
+                    } else {
+                        // Nếu vẫn không có public key sau khi getOrCreatePrivateKey → log warning và retry
+                        console.warn('⚠️ [AUTH_CONTEXT] Key pair creation may have failed. Private key exists but public key not found in database.');
+                        // Thử tạo lại một lần nữa
+                        try {
+                            await deviceService.getOrCreatePrivateKey(authUser.id);
+                            console.log('✅ [AUTH_CONTEXT] Retried key pair creation via setAuth');
+                        } catch (retryError) {
+                            console.error('❌ [AUTH_CONTEXT] Retry failed via setAuth:', retryError.message);
+                        }
+                    }
+                } catch (keyError) {
+                    // Không block login nếu tạo key pair thất bại
+                    console.warn('[AuthContext] ⚠️ Could not ensure key pair via setAuth:', keyError.message);
+                }
+            }, 100); // Delay 100ms để không block UI
+        }
     };
 
     const checkStoredSession = async () => {

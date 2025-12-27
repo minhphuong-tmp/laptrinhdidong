@@ -171,7 +171,7 @@ class PinService {
         }
     }
 
-    // Set PIN (hash PIN với salt, lưu lên server trong user_security)
+    // Set PIN (lưu plaintext vào users table - cho dự án cá nhân)
     async setPin(pin, userId) {
         try {
             if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
@@ -190,29 +190,29 @@ class PinService {
             // 1. Tạo pin_salt (16 bytes random)
             const pinSalt = await this.generateSalt();
 
-            // 2. Hash PIN với salt: SHA-256(PIN + salt)
-            const pinHash = await this.hashPin(pin, pinSalt);
-
-            // 3. Lưu lên server trong user_security table
+            // 2. Lưu PIN plaintext và salt vào users table (cho dự án cá nhân)
+            // Note: updated_at có thể không tồn tại trong schema cũ, nên chỉ update nếu có
+            const updateData = {
+                pin: pin, // Plaintext PIN (security risk nhưng chấp nhận được cho dự án cá nhân)
+                pin_salt: pinSalt
+            };
+            
+            // Chỉ thêm updated_at nếu cột tồn tại (sẽ được thêm bởi migration)
+            // Nếu migration chưa chạy, bỏ qua updated_at để tránh lỗi
             const { error } = await supabase
-                .from('user_security')
-                .upsert({
-                    user_id: userId,
-                    pin_salt: pinSalt,
-                    pin_hash: pinHash,
-                    updated_at: new Date().toISOString()
-                }, {
-                    onConflict: 'user_id'
-                });
+                .from('users')
+                .update(updateData)
+                .eq('id', userId);
 
             if (error) {
                 console.error('Error saving PIN to server:', error);
                 throw new Error(`Failed to save PIN: ${error.message}`);
             }
 
-            // 4. Generate và cache master unlock key trong memory (không lưu storage)
-            // Master unlock key được derive từ PIN khi unlock
-            const masterUnlockKey = await this.generateMasterUnlockKey();
+            // 3. Derive master unlock key từ PIN: PBKDF2(PIN, salt, 100k, 32 bytes)
+            const masterUnlockKey = await this.deriveUnlockKey(pin, pinSalt);
+
+            // 4. Cache master unlock key trong memory (không lưu storage)
             this.masterUnlockKey = masterUnlockKey;
             this.pinUnlocked = true;
 
@@ -223,7 +223,7 @@ class PinService {
         }
     }
 
-    // Get PIN info từ server (user_security table)
+    // Get PIN info từ server (users table - plaintext PIN)
     async getPinInfo(userId) {
         try {
             if (!userId) {
@@ -231,9 +231,9 @@ class PinService {
             }
 
             const { data, error } = await supabase
-                .from('user_security')
-                .select('pin_salt, pin_hash')
-                .eq('user_id', userId)
+                .from('users')
+                .select('pin, pin_salt')
+                .eq('id', userId)
                 .single();
 
             if (error) {
@@ -252,7 +252,30 @@ class PinService {
         }
     }
 
-    // Kiểm tra PIN đã được thiết lập chưa (từ server - user_security table)
+    // Fetch PIN từ database (tự động, không cần unlock)
+    // Dùng để mã hóa tin nhắn khi gửi (không cần user nhập PIN)
+    async fetchPinFromDatabase(userId) {
+        try {
+            if (!userId) {
+                return null;
+            }
+
+            const pinInfo = await this.getPinInfo(userId);
+            if (!pinInfo || !pinInfo.pin || !pinInfo.pin_salt) {
+                return null;
+            }
+
+            return {
+                pin: pinInfo.pin,
+                pinSalt: pinInfo.pin_salt
+            };
+        } catch (error) {
+            console.error('Error fetching PIN from database:', error);
+            return null;
+        }
+    }
+
+    // Kiểm tra PIN đã được thiết lập chưa (từ server - users table)
     async isPinSet(userId) {
         try {
             if (!userId) {
@@ -260,14 +283,14 @@ class PinService {
             }
 
             const pinInfo = await this.getPinInfo(userId);
-            return pinInfo !== null && pinInfo.pin_hash !== null && pinInfo.pin_hash.length > 0;
+            return pinInfo !== null && pinInfo.pin !== null && pinInfo.pin.length > 0;
         } catch (error) {
             console.error('Error checking if PIN is set:', error);
             return false;
         }
     }
 
-    // Unlock với PIN (verify PIN hash, derive master unlock key)
+    // Unlock với PIN (verify PIN plaintext, derive master unlock key)
     async unlockWithPin(pin, userId) {
         try {
             if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
@@ -283,17 +306,16 @@ class PinService {
                 return { success: false, error: 'E2E encryption not available' };
             }
 
-            // 1. Lấy PIN info từ server (user_security table)
+            // 1. Lấy PIN info từ server (users table - plaintext)
             const pinInfo = await this.getPinInfo(userId);
-            if (!pinInfo || !pinInfo.pin_hash || !pinInfo.pin_salt) {
+            if (!pinInfo || !pinInfo.pin || !pinInfo.pin_salt) {
                 return { success: false, error: 'PIN chưa được thiết lập' };
             }
 
-            const { pin_salt, pin_hash } = pinInfo;
+            const { pin: storedPin, pin_salt } = pinInfo;
 
-            // 2. Verify PIN: Hash PIN nhập vào và so sánh với pin_hash trong DB
-            const inputPinHash = await this.hashPin(pin, pin_salt);
-            if (inputPinHash !== pin_hash) {
+            // 2. Verify PIN: So sánh trực tiếp với PIN plaintext trong DB
+            if (pin !== storedPin) {
                 return { success: false, error: 'PIN không đúng' };
             }
 
@@ -322,14 +344,8 @@ class PinService {
         this.masterUnlockKey = null;
         this.pinUnlocked = false;
 
-        // Clear ConversationKey cache khi PIN lock (bảo mật)
-        try {
-            const conversationKeyService = require('./conversationKeyService').default;
-            conversationKeyService.clearKeyCache();
-        } catch (error) {
-            // Ignore error nếu conversationKeyService chưa được import
-            console.log('[PinService] Could not clear ConversationKey cache:', error.message);
-        }
+        // DEPRECATED: ConversationKeyService không còn được sử dụng
+        // Không cần clear cache nữa
     }
 
     // Lấy master unlock key (nếu đã unlock)
@@ -345,7 +361,7 @@ class PinService {
         return this.pinUnlocked && this.masterUnlockKey !== null;
     }
 
-    // Clear PIN (xóa trên server - user_security table)
+    // Clear PIN (xóa trên server - users table)
     async clearPin(userId) {
         try {
             if (!userId) {
@@ -353,9 +369,13 @@ class PinService {
             }
 
             const { error } = await supabase
-                .from('user_security')
-                .delete()
-                .eq('user_id', userId);
+                .from('users')
+                .update({
+                    pin: null,
+                    pin_salt: null
+                    // Không update updated_at để tránh lỗi nếu cột chưa tồn tại
+                })
+                .eq('id', userId);
 
             if (error) {
                 throw error;
@@ -371,4 +391,3 @@ class PinService {
 }
 
 export default new PinService();
-

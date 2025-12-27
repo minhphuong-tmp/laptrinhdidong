@@ -1,7 +1,7 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import moment from 'moment';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Icon from '../../assets/icons';
 import Avatar from '../../components/Avatar';
 import GroupAvatar from '../../components/GroupAvatar';
@@ -25,17 +25,38 @@ const ChatList = () => {
     const [decryptedMessages, setDecryptedMessages] = useState({}); // Cache decrypted messages
     // State quản lý PIN: track xem user đã nhập PIN chưa để hiển thị last message đúng
     const [isPinEntered, setIsPinEntered] = useState(false);
+    // State cho modal thiết lập PIN
+    const [showSetupPinModal, setShowSetupPinModal] = useState(false);
+    const [pinInput, setPinInput] = useState('');
+    const [pinConfirmInput, setPinConfirmInput] = useState('');
+    const [pinError, setPinError] = useState('');
+    const [isPinSet, setIsPinSet] = useState(false);
     const subscriptionRef = useRef(null);
     const loadTimeRef = useRef(null);
     const logHasRun = useRef(false);
     const metricsLogged = useRef(false); // Flag riêng để track đã log metrics chưa
     const isLoadingRef = useRef(false); // Flag để tránh load trùng
 
-    // Sync PIN state với pinService - check khi mount và khi app state thay đổi
+    // Check PIN status khi mount và hiển thị modal nếu chưa thiết lập PIN
     useEffect(() => {
-        const checkPinStatus = () => {
+        const checkPinStatus = async () => {
+            if (!user?.id) return;
+            
             const isUnlocked = pinService.isUnlocked();
             setIsPinEntered(isUnlocked);
+            
+            // Check xem user đã thiết lập PIN chưa
+            try {
+                const pinSet = await pinService.isPinSet(user.id);
+                setIsPinSet(pinSet);
+                
+                // Nếu chưa thiết lập PIN → hiển thị modal (không cho đóng)
+                if (!pinSet) {
+                    setShowSetupPinModal(true);
+                }
+            } catch (error) {
+                console.error('Error checking PIN status:', error);
+            }
         };
 
         // Check ngay khi mount
@@ -44,14 +65,15 @@ const ChatList = () => {
         // Listen app state changes để sync PIN khi user nhập PIN ở màn hình khác
         const subscription = AppState.addEventListener('change', (nextAppState) => {
             if (nextAppState === 'active') {
-                checkPinStatus();
+                const isUnlocked = pinService.isUnlocked();
+                setIsPinEntered(isUnlocked);
             }
         });
 
         return () => {
             subscription?.remove();
         };
-    }, []);
+    }, [user?.id]);
 
     // Listen focus để check PIN status khi quay lại màn hình này
     useFocusEffect(
@@ -961,6 +983,41 @@ const ChatList = () => {
         );
     };
 
+    const handleSetupPin = async () => {
+        if (!pinInput || pinInput.length !== 6 || !/^\d{6}$/.test(pinInput)) {
+            setPinError('Vui lòng nhập đúng 6 số');
+            return;
+        }
+
+        if (!pinConfirmInput || pinConfirmInput.length !== 6 || !/^\d{6}$/.test(pinConfirmInput)) {
+            setPinError('Vui lòng xác nhận đúng 6 số');
+            return;
+        }
+
+        if (pinInput !== pinConfirmInput) {
+            setPinError('PIN xác nhận không khớp');
+            return;
+        }
+
+        try {
+            if (!user?.id) {
+                setPinError('Không tìm thấy thông tin người dùng');
+                return;
+            }
+
+            await pinService.setPin(pinInput, user.id);
+            setIsPinSet(true);
+            setShowSetupPinModal(false);
+            setPinInput('');
+            setPinConfirmInput('');
+            setPinError('');
+            Alert.alert('Thành công', 'PIN đã được thiết lập. Bạn có thể dùng PIN này trên tất cả thiết bị.');
+        } catch (error) {
+            setPinError(error.message || 'Lỗi khi thiết lập PIN');
+            console.error('Error setting PIN:', error);
+        }
+    };
+
     if (loading) {
         return (
             <ScreenWrapper bg="white">
@@ -1030,6 +1087,75 @@ const ChatList = () => {
                     }
                 />
             </View>
+
+            {/* PIN Setup Modal - Hiển thị khi user chưa thiết lập PIN */}
+            <Modal
+                visible={showSetupPinModal}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => {
+                    // Không cho đóng modal nếu chưa thiết lập PIN
+                    if (!isPinSet) {
+                        return;
+                    }
+                    setShowSetupPinModal(false);
+                }}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>Thiết lập PIN</Text>
+                        <Text style={styles.modalSubtitle}>
+                            Thiết lập PIN để bảo mật tin nhắn
+                        </Text>
+                        <Text style={styles.modalDescription}>
+                            Nhập 6 số PIN để mở khóa đọc tin nhắn từ thiết bị khác
+                        </Text>
+
+                        <TextInput
+                            style={styles.pinInput}
+                            value={pinInput}
+                            onChangeText={(text) => {
+                                setPinInput(text.replace(/[^0-9]/g, '').slice(0, 6));
+                                setPinError('');
+                            }}
+                            placeholder="Nhập PIN (6 số)"
+                            placeholderTextColor={theme.colors.textSecondary}
+                            keyboardType="number-pad"
+                            maxLength={6}
+                            secureTextEntry
+                            autoFocus
+                        />
+
+                        <TextInput
+                            style={[styles.pinInput, { marginTop: hp(1.5) }]}
+                            value={pinConfirmInput}
+                            onChangeText={(text) => {
+                                setPinConfirmInput(text.replace(/[^0-9]/g, '').slice(0, 6));
+                                setPinError('');
+                            }}
+                            placeholder="Xác nhận PIN (6 số)"
+                            placeholderTextColor={theme.colors.textSecondary}
+                            keyboardType="number-pad"
+                            maxLength={6}
+                            secureTextEntry
+                        />
+
+                        {pinError ? (
+                            <Text style={styles.pinError}>{pinError}</Text>
+                        ) : null}
+
+                        <View style={styles.modalButtons}>
+                            <TouchableOpacity
+                                style={[styles.modalButton, styles.modalButtonSubmit]}
+                                onPress={handleSetupPin}
+                                disabled={pinInput.length !== 6 || pinConfirmInput.length !== 6}
+                            >
+                                <Text style={styles.modalButtonSubmitText}>Lưu PIN</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </ScreenWrapper>
     );
 };
@@ -1191,5 +1317,75 @@ const styles = StyleSheet.create({
         padding: hp(1),
         borderRadius: theme.radius.lg,
         backgroundColor: 'rgba(255, 68, 68, 0.1)',
+    },
+    // Modal styles
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalContent: {
+        backgroundColor: theme.colors.background,
+        borderRadius: theme.radius.xl,
+        padding: hp(3),
+        width: wp(85),
+        maxWidth: 400,
+    },
+    modalTitle: {
+        fontSize: hp(2.5),
+        fontWeight: theme.fonts.bold,
+        color: theme.colors.text,
+        textAlign: 'center',
+        marginBottom: hp(1),
+    },
+    modalSubtitle: {
+        fontSize: hp(2),
+        fontWeight: theme.fonts.semiBold,
+        color: theme.colors.text,
+        textAlign: 'center',
+        marginBottom: hp(0.5),
+    },
+    modalDescription: {
+        fontSize: hp(1.6),
+        color: theme.colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: hp(2),
+    },
+    pinInput: {
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: theme.radius.md,
+        padding: hp(1.5),
+        fontSize: hp(2),
+        color: theme.colors.text,
+        backgroundColor: theme.colors.background,
+        textAlign: 'center',
+    },
+    pinError: {
+        color: theme.colors.error || '#ff4444',
+        fontSize: hp(1.5),
+        marginTop: hp(1),
+        textAlign: 'center',
+    },
+    modalButtons: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        marginTop: hp(2),
+    },
+    modalButton: {
+        paddingVertical: hp(1.5),
+        paddingHorizontal: wp(8),
+        borderRadius: theme.radius.md,
+        minWidth: wp(30),
+    },
+    modalButtonSubmit: {
+        backgroundColor: theme.colors.primary,
+    },
+    modalButtonSubmitText: {
+        color: 'white',
+        fontSize: hp(1.8),
+        fontWeight: theme.fonts.semiBold,
+        textAlign: 'center',
     },
 });

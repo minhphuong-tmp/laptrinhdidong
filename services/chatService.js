@@ -589,39 +589,80 @@ export const sendMessage = async (data) => {
             return { success: false, msg: 'Không thể lấy thông tin cuộc trò chuyện' };
         }
 
-        // FIX: Lấy device ID - đảm bảo luôn lấy từ deviceService, không dùng cache cũ
-        const deviceId = await deviceService.getOrCreateDeviceId();
-
-        // Chỉ tạo 2 messages cho direct chat và text message
+        // Chỉ áp dụng E2EE cho direct chat và text message
         if (conversation?.type === 'direct' && data.message_type === 'text') {
             try {
-                // ===== NEW ARCHITECTURE: Encrypt bằng ConversationKey =====
-                const conversationKeyService = require('./conversationKeyService').default;
+                // ===== NEW ARCHITECTURE: Encrypt với encryptedForReceiver và encryptedForSync =====
+                const pinService = require('./pinService').default;
+                const localMessagePlaintextService = require('../utils/localMessagePlaintextService').default;
 
-                // Lấy hoặc tạo ConversationKey cho conversation (đã được mã hóa bằng PIN và lưu local)
-                const conversationKey = await conversationKeyService.getOrCreateConversationKey(data.conversation_id);
+                // 1. Lấy receiver ID từ conversation
+                const { data: members, error: membersError } = await supabase
+                    .from('conversation_members')
+                    .select('user_id')
+                    .eq('conversation_id', data.conversation_id);
 
-                if (!conversationKey) {
-                    throw new Error('Cannot get or create ConversationKey');
+                if (membersError || !members || members.length !== 2) {
+                    throw new Error('Cannot get conversation members');
                 }
 
-                // Mã hóa nội dung bằng ConversationKey
-                // encryptedContent là base64 string (không cần format phức tạp như trước)
-                const encryptedContent = await encryptionService.encryptMessageWithConversationKey(
+                const receiverId = members.find(m => m.user_id !== data.sender_id)?.user_id;
+                if (!receiverId) {
+                    throw new Error('Cannot find receiver ID');
+                }
+
+                // 2. Tự động fetch PIN từ database (không cần unlock)
+                const pinData = await pinService.fetchPinFromDatabase(data.sender_id);
+                if (!pinData || !pinData.pin || !pinData.pinSalt) {
+                    return { 
+                        success: false, 
+                        requiresPinSetup: true,
+                        msg: 'Vui lòng thiết lập PIN để gửi tin nhắn mã hóa' 
+                    };
+                }
+
+                // 3. Tạo master key từ PIN + salt (cho sync)
+                const masterKey = await pinService.deriveUnlockKey(pinData.pin, pinData.pinSalt);
+                if (!masterKey || masterKey.length !== 32) {
+                    throw new Error('Failed to derive master key');
+                }
+
+                // 4. Lấy TẤT CẢ devices hợp lệ của receiver để encrypt cho mỗi device
+                const deviceService = require('./deviceService').default;
+                const validRecipientDevices = await deviceService.getValidRecipientDevices(receiverId);
+                
+                if (!validRecipientDevices || validRecipientDevices.length === 0) {
+                    console.error('[sendMessage] Receiver has no valid devices. Receiver ID:', receiverId);
+                    throw new Error('Receiver chưa có key pair. Vui lòng yêu cầu receiver đăng nhập lại để tạo key pair.');
+                }
+
+                // 5. Mã hóa cho receiver với TẤT CẢ devices (mỗi device có encrypted_key riêng)
+                const encryptedForReceiver = await encryptionService.encryptForReceiver(
                     data.content,
-                    conversationKey
+                    validRecipientDevices.map(device => ({
+                        device_id: device.device_id,
+                        public_key: device.public_key
+                    }))
                 );
 
-                // Tạo 2 messages: receiver (plaintext) và sender (encrypted)
-                const { data: receiverMessage, error: receiverError } = await supabase
+                // 6. Mã hóa cho sync (PIN-based)
+                const encryptedForSync = await encryptionService.encryptForSync(
+                    data.content,
+                    masterKey
+                );
+
+                // Xóa content (plaintext) trước khi insert để không lưu vào DB
+                const { content, ...dataWithoutContent } = data;
+                
+                const { data: message, error: messageError } = await supabase
                     .from('messages')
                     .insert({
-                        ...data,
-                        content: data.content, // Plaintext cho receiver
-                        is_encrypted: false,
-                        is_sender_copy: false,
-                        sender_device_id: null,
-                        encryption_version: 3 // Version 3: ConversationKey architecture
+                        ...dataWithoutContent,
+                        content: null, // Không lưu plaintext vào DB
+                        encrypted_for_receiver: encryptedForReceiver,
+                        encrypted_for_sync: encryptedForSync,
+                        is_encrypted: true,
+                        encryption_algorithm: 'AES-256-GCM',
                     })
                     .select(`
                         *,
@@ -629,63 +670,30 @@ export const sendMessage = async (data) => {
                     `)
                     .single();
 
-                if (receiverError) {
-                    console.log('sendMessage receiverError:', receiverError);
+                if (messageError) {
+                    console.error('sendMessage error:', messageError);
                     return { success: false, msg: 'Không thể gửi tin nhắn' };
                 }
 
-                // FIX: Tạo sender copy (encrypted) - đảm bảo sender_device_id chính xác
-                const { data: senderMessage, error: senderError } = await supabase
-                    .from('messages')
-                    .insert({
-                        ...data,
-                        content: encryptedContent, // Encrypted cho sender
-                        is_encrypted: true,
-                        encryption_algorithm: 'AES-256-GCM',
-                        is_sender_copy: true,
-                        sender_device_id: deviceId,
-                        // NEW ARCHITECTURE: Không cần encrypted_aes_key_by_pin (PIN layer trong message)
-                        encryption_version: 3 // Version 3: ConversationKey architecture
-                    })
-                    .select(`
-                        *,
-                        sender:users(id, name, image)
-                    `)
-                    .single();
+                // 7. Lưu plaintext vào localStorage với metadata
+                await localMessagePlaintextService.saveMessagePlaintext(message.id, data.content, {
+                    conversation_id: data.conversation_id,
+                    sender_id: data.sender_id,
+                    created_at: message.created_at,
+                    message_type: data.message_type || 'text',
+                    is_encrypted: true
+                });
 
-                // FIX: Verify sender_device_id sau khi insert
-                if (senderMessage && senderMessage.sender_device_id) {
-                    if (senderMessage.sender_device_id !== deviceId) {
-                        console.error('[ChatService] ERROR: sender_device_id mismatch!', {
-                            expected: deviceId,
-                            actual: senderMessage.sender_device_id
-                        });
-                    }
-                }
-
-                if (senderError) {
-                    console.log('sendMessage senderError:', senderError);
-                    // Nếu lỗi sender copy, vẫn trả về receiver message
-                    // Cập nhật updated_at của conversation
-                    await supabase
-                        .from('conversations')
-                        .update({ updated_at: new Date().toISOString() })
-                        .eq('id', data.conversation_id);
-
-                    return { success: true, data: receiverMessage };
-                }
-
-                // Cập nhật updated_at của conversation
+                // 8. Cập nhật updated_at của conversation
                 await supabase
                     .from('conversations')
                     .update({ updated_at: new Date().toISOString() })
                     .eq('id', data.conversation_id);
 
-                // Trả về receiver message (để hiển thị cho sender nếu cần)
-                return { success: true, data: receiverMessage };
+                return { success: true, data: message };
             } catch (encryptError) {
                 console.error('Error encrypting message:', encryptError);
-                // Nếu mã hóa lỗi, gửi plaintext như bình thường
+                // Nếu mã hóa lỗi, gửi plaintext như bình thường (fallback)
                 console.warn('Sending message as plaintext due to encryption error.');
             }
         }
@@ -696,8 +704,6 @@ export const sendMessage = async (data) => {
             .insert({
                 ...data,
                 is_encrypted: false,
-                is_sender_copy: false,
-                sender_device_id: null
             })
             .select(`
                 *,
@@ -723,15 +729,15 @@ export const sendMessage = async (data) => {
     }
 };
 
-export const getMessages = async (conversationId, userId, limit = 50, offset = 0) => {
+export const getMessages = async (conversationId, userId, limit = 50, offset = 0, includeSentMessages = false) => {
     try {
         // Lấy device ID hiện tại
         const deviceId = await deviceService.getOrCreateDeviceId();
 
-        // Query messages với filter:
-        // - is_sender_copy = false: Tất cả users đều thấy (receiver messages)
-        // - is_sender_copy = true AND sender_id = userId: Lấy sender copy từ mọi device (cả device hiện tại và device khác)
-        const { data, error } = await supabase
+        // NEW ARCHITECTURE: 
+        // - Nếu includeSentMessages = false: Chỉ query tin nhắn NHẬN được (sender_id !== userId)
+        // - Nếu includeSentMessages = true: Query CẢ tin nhắn đã gửi và nhận được (để decrypt với PIN)
+        let query = supabase
             .from('messages')
             .select(`
                 *,
@@ -741,8 +747,15 @@ export const getMessages = async (conversationId, userId, limit = 50, offset = 0
                     read_at
                 )
             `)
-            .eq('conversation_id', conversationId)
-            .or(`is_sender_copy.eq.false,and(is_sender_copy.eq.true,sender_id.eq.${userId})`)
+            .eq('conversation_id', conversationId);
+        
+        if (!includeSentMessages) {
+            // Chỉ lấy tin nhắn nhận được
+            query = query.neq('sender_id', userId);
+        }
+        // Nếu includeSentMessages = true → lấy tất cả (không filter sender_id)
+        
+        const { data, error } = await query
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
 
@@ -761,41 +774,8 @@ export const getMessages = async (conversationId, userId, limit = 50, offset = 0
             .eq('id', conversationId)
             .single();
 
-        // KHÔNG decrypt tự động - chỉ trả về encrypted content
-        // Decryption sẽ được thực hiện trong UI khi người dùng nhập PIN
-        const messagesWithDecryptionState = data.map((msg) => {
-            // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
-            if (msg.is_sender_copy === true) {
-                // sender_copy → giữ nguyên metadata, reset decryption state
-                const senderDeviceId = msg.sender_device_id;
-                const isFromCurrentDevice = senderDeviceId === deviceId;
-                const processed = {
-                    ...msg,
-                    decryptedContent: null,
-                    isDecrypted: false,
-                    decryption_error: false,
-                    encrypted_from_other_device: !isFromCurrentDevice
-                    // KHÔNG thay đổi is_encrypted (giữ nguyên từ DB)
-                    // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
-                };
-
-                return processed;
-            }
-
-            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
-            // Self-healing: Ép thành plaintext nếu flag sai
-            const processed = {
-                ...msg,
-                decryptedContent: msg.content || null,
-                isDecrypted: true,
-                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
-                // Giữ nguyên content vì đây là tin nhắn thường
-            };
-
-            return processed;
-        });
-
-        return { success: true, data: messagesWithDecryptionState.reverse() }; // Reverse để hiển thị từ cũ đến mới
+        // Trả về messages từ DB, không xử lý gì thêm (decrypt sẽ được thực hiện trong UI)
+        return { success: true, data: data.reverse() }; // Reverse để hiển thị từ cũ đến mới
     } catch (error) {
         console.log('getMessages error:', error);
         return { success: false, msg: 'Không thể lấy tin nhắn' };
@@ -808,9 +788,8 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
         // Lấy device ID hiện tại
         const deviceId = await deviceService.getOrCreateDeviceId();
 
-        // Query messages có created_at > sinceTimestamp với filter tương tự getMessages
-        // - is_sender_copy = false: Tất cả users đều thấy (receiver messages)
-        // - is_sender_copy = true AND sender_id = userId: Lấy sender copy từ mọi device
+        // NEW ARCHITECTURE: Chỉ query tin nhắn NHẬN được (sender_id !== userId)
+        // Tin nhắn đã gửi sẽ được lấy từ localStorage, không query từ DB
         const { data: messages, error } = await supabase
             .from('messages')
             .select(`
@@ -823,7 +802,7 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
             `)
             .eq('conversation_id', conversationId)
             .gt('created_at', sinceTimestamp)
-            .or(`is_sender_copy.eq.false,and(is_sender_copy.eq.true,sender_id.eq.${userId})`)
+            .neq('sender_id', userId) // CHỈ lấy tin nhắn nhận được
             .order('created_at', { ascending: false });
 
         // Include encrypted_aes_key_by_pin và encryption_version trong select
@@ -844,52 +823,9 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
             return [];
         }
 
-        // KHÔNG decrypt tự động - chỉ trả về encrypted content
-        // Decryption sẽ được thực hiện trong UI khi người dùng nhập PIN
-        const messagesWithDecryptionState = filteredMessages.map((msg) => {
-            // DEBUG: Log raw message để xác định metadata
-            if (msg.message_type === 'text' && !msg.is_sender_copy) {
-                console.log('[E2EE Debug] getNewMessages() - Raw plaintext message:', JSON.stringify({
-                    id: msg.id,
-                    is_encrypted: msg.is_encrypted,
-                    encrypted_aes_key: msg.encrypted_aes_key,
-                    encrypted_aes_key_by_pin: msg.encrypted_aes_key_by_pin,
-                    encrypted_key_by_device: msg.encrypted_key_by_device,
-                    message_type: msg.message_type,
-                    is_sender_copy: msg.is_sender_copy,
-                    sender_id: msg.sender_id,
-                    content_preview: msg.content ? msg.content.substring(0, 50) : null
-                }, null, 2));
-            }
-
-            // FIX E: sender_copy → KHÔNG set is_encrypted = false, chỉ dùng nội bộ
-            if (msg.is_sender_copy === true) {
-                // sender_copy → giữ nguyên metadata, reset decryption state
-                const senderDeviceId = msg.sender_device_id;
-                const isFromCurrentDevice = senderDeviceId === deviceId;
-                return {
-                    ...msg,
-                    decryptedContent: null,
-                    isDecrypted: false,
-                    decryption_error: false,
-                    encrypted_from_other_device: !isFromCurrentDevice
-                    // KHÔNG thay đổi is_encrypted (giữ nguyên từ DB)
-                    // Giữ nguyên encrypted_aes_key, encrypted_aes_key_by_pin, content (encrypted)
-                };
-            }
-            // Plaintext message (receiver) → BẮT BUỘC set isDecrypted = true và decryptedContent = content
-            // Self-healing: Ép thành plaintext nếu flag sai
-            return {
-                ...msg,
-                decryptedContent: msg.content || null,
-                isDecrypted: true,
-                is_encrypted: false // Đảm bảo flag đúng cho tin nhắn thường
-                // Giữ nguyên content vì đây là tin nhắn thường
-            };
-        });
-
+        // Trả về messages từ DB, không xử lý gì thêm (decrypt sẽ được thực hiện trong UI)
         // Reverse để hiển thị từ cũ đến mới
-        return messagesWithDecryptionState.reverse();
+        return filteredMessages.reverse();
     } catch (error) {
         console.error('Error in getNewMessages:', error);
         throw error;
