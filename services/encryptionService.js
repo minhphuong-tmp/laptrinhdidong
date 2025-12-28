@@ -1875,11 +1875,9 @@ class EncryptionService {
             if (!receiverDevices || !Array.isArray(receiverDevices) || receiverDevices.length === 0) {
                 throw new Error('Receiver devices array is required and must not be empty');
             }
-
-            // Generate AES-256 conversation key for this message
+            //tạo conservation key để mã hoá tin nhắn
             const conversationKey = await this.generateAESKey();
-
-            // Encrypt plaintext with conversation key (AES-256-GCM)
+            // Mã hóa plaintext bằng conversation_key (AES)
             const ciphertext = await this.encryptAES(plaintext, conversationKey);
 
             // Encrypt conversation_key for EACH device using its public key
@@ -1890,16 +1888,16 @@ class EncryptionService {
                 has_public_key: !!d.public_key,
                 public_key_length: d.public_key?.length || 0
             })));
-
+            //gửi cho từng thiết bị của người nhận
             const encryptedKeys = await Promise.all(
                 receiverDevices.map(async (device, index) => {
                     if (!device.device_id || !device.public_key) {
                         throw new Error(`Device missing device_id or public_key: ${JSON.stringify(device)}`);
                     }
 
-                    // Encrypt conversation_key with device's RSA public key
+                    // Mã hoá conservation key bằng public key
                     const encryptedKey = await this.encryptAESKeyWithRSA(conversationKey, device.public_key);
-                    
+
                     console.log(`[encryptForReceiver] ✅ Device ${index + 1}/${receiverDevices.length}:`, {
                         device_id: device.device_id,
                         device_name: device.device_name || 'N/A',

@@ -499,7 +499,7 @@ const ChatScreen = () => {
                             console.error(`[REALTIME] ✗ Error decrypting sent message ${messageWithSender.id} with master key:`, error);
                         }
                     }
-                    
+
                     // Không load từ localStorage - chỉ decrypt với PIN hoặc hiển thị placeholder
                     if (!decryptedMessage.runtime_plain_text) {
                         decryptedMessage = {
@@ -623,7 +623,7 @@ const ChatScreen = () => {
                     const deviceService = require('../../services/deviceService').default;
                     const privateKey = await deviceService.getOrCreatePrivateKey(user.id);
                     const currentDeviceId = await deviceService.getOrCreateDeviceId();
-                    
+
                     if (privateKey && currentDeviceId) {
                         const plaintext = await encryptionService.decryptForReceiver(messageWithSender.encrypted_for_receiver, currentDeviceId, privateKey);
                         if (plaintext && plaintext.trim() !== '') {
@@ -661,14 +661,14 @@ const ChatScreen = () => {
                 }
                 // Tin nhắn không encrypted hoặc không phải text → tiếp tục xử lý bình thường
             }
-            
+
             // FIX: Tuyệt đối không push message vào state nếu message đó đã tồn tại (check id)
             // CHỈ thêm vào state nếu decrypt thành công (có runtime_plain_text)
             if (!decryptedReceivedMessage.runtime_plain_text && decryptedReceivedMessage.is_encrypted === true && decryptedReceivedMessage.message_type === 'text') {
                 console.warn(`[REALTIME] Received encrypted message ${decryptedReceivedMessage.id} without plaintext - không hiển thị tin nhắn này`);
                 return; // Không thêm vào state
             }
-            
+
             setMessages(prev => {
                 const existingIndex = prev.findIndex(msg => msg.id === messageWithSender.id);
                 let newMessages;
@@ -920,9 +920,7 @@ const ChatScreen = () => {
         setLoading(true);
         performanceMetrics.trackRender('ChatScreen-LoadMessages');
 
-        // Nếu PIN unlocked: Load TẤT CẢ messages từ DB (cả sent và received)
-        // Nếu PIN locked: Load như cũ (received từ DB, sent từ local)
-        // CRITICAL: Check pinService.isUnlocked() thay vì state pinUnlocked để tránh race condition
+
         const isPinUnlockedState = pinService.isUnlocked() || pinUnlocked;
         let masterKey = null;
         if (isPinUnlockedState) {
@@ -936,12 +934,12 @@ const ChatScreen = () => {
                 console.error('[LOAD_MESSAGES] Error getting master key:', error);
             }
         }
-
+        //PIN đã mở
         if (isPinUnlockedState && masterKey) {
             // PIN UNLOCKED: Load TẤT CẢ messages từ DB
             console.log('[LOAD_MESSAGES] Loading ALL messages from DB (PIN unlocked)');
             const res = await getMessages(conversationId, user.id, 1000, 0, true); // Load cả sent messages
-            
+
             setLoading(false);
 
             if (res.success && res.data && Array.isArray(res.data)) {
@@ -984,7 +982,7 @@ const ChatScreen = () => {
                                     return null;
                                 }
                             }
-
+                            //nếu PIN đã nhập mở
                             // Tin nhắn ĐÃ GỬI: Decrypt với master key (PIN)
                             if (isSentMessage && isTextMessage && isEncrypted && msg.encrypted_for_sync && masterKey) {
                                 try {
@@ -1014,7 +1012,7 @@ const ChatScreen = () => {
                             return null;
                         }
                     });
-                    
+
                     const messagesResult = await Promise.all(messagesPromise);
                     // Filter ra các message không decrypt được (null)
                     allMessages = Array.isArray(messagesResult) ? messagesResult.filter(msg => msg !== null) : [];
@@ -1033,7 +1031,7 @@ const ChatScreen = () => {
                 setMessages(mergeMessages(sortedMessages));
 
                 console.log(`[LOAD_MESSAGES] PIN unlocked: ${allMessages.length} total messages from DB`);
-                
+
                 // === METRICS: Track network data ===
                 const estimatedSize = res.data.length * 500;
                 performanceMetrics.trackNetworkRequest(estimatedSize, 'download');
@@ -1054,21 +1052,21 @@ const ChatScreen = () => {
             return; // Kết thúc function sớm nếu PIN unlocked
         }
 
-        // PIN LOCKED: Load như cũ (received từ DB, sent từ local)
-        console.log('[LOAD_MESSAGES] Loading messages (PIN locked): Received from DB, Sent from localStorage');
-        
+
+        //KHI PIN CHƯA MỞ
         // 1. Load tin nhắn NHẬN ĐƯỢC từ DB
         const res = await getMessages(conversationId, user.id, 1000, 0); // Chỉ lấy tin nhắn nhận được
-        
+
         // 2. Load tin nhắn ĐÃ GỬI từ localStorage
         const sentMessagesFromLocal = await localMessagePlaintextService.getSentMessagesForConversation(
-            conversationId, 
+            conversationId,
             user.id
         );
 
         // 3. Lấy message IDs từ localStorage để query full data từ DB
         const sentMessageIds = sentMessagesFromLocal.map(msg => msg.id);
         let sentMessagesFromDB = [];
+        //truy vấn ngược lên cSDL để xem đầy đủ thông tin tin nhắn
         if (sentMessageIds.length > 0) {
             // Query DB để lấy full message data cho tin nhắn đã gửi
             const { data: dbSentMessages, error: dbError } = await supabase
@@ -1090,16 +1088,16 @@ const ChatScreen = () => {
 
         if (res.success) {
             // 4. Xử lý tin nhắn NHẬN ĐƯỢC: Decrypt với private key
-                let privateKey = null;
-                try {
-                    privateKey = await deviceService.getOrCreatePrivateKey(user.id);
-                } catch (error) {
+            let privateKey = null;
+            try {
+                privateKey = await deviceService.getOrCreatePrivateKey(user.id);
+            } catch (error) {
                 console.error('[LOAD_MESSAGES] Error getting private key:', error);
-                }
-                
+            }
+
             const receivedMessages = (await Promise.all(res.data.map(async (msg) => {
-                    const isTextMessage = msg.message_type === 'text';
-                    
+                const isTextMessage = msg.message_type === 'text';
+
                 // Decrypt tin nhắn nhận được bằng private key
                 if (isTextMessage && msg.is_encrypted && msg.encrypted_for_receiver && privateKey) {
                     try {
@@ -1108,25 +1106,25 @@ const ChatScreen = () => {
                             return null; // Không có device ID → không hiển thị
                         }
                         const plaintext = await encryptionService.decryptForReceiver(msg.encrypted_for_receiver, currentDeviceId, privateKey);
-                            if (plaintext && plaintext.trim() !== '') {
-                                return {
-                                    ...msg,
-                                    runtime_plain_text: plaintext,
-                                    hasValidPlaintext: true,
-                                    decryption_error: false
-                                };
-                            }
-                            // Decrypt thất bại → return null để filter ra
-                            return null;
-                        } catch (error) {
+                        if (plaintext && plaintext.trim() !== '') {
+                            return {
+                                ...msg,
+                                runtime_plain_text: plaintext,
+                                hasValidPlaintext: true,
+                                decryption_error: false
+                            };
+                        }
+                        // Decrypt thất bại → return null để filter ra
+                        return null;
+                    } catch (error) {
                         // Decrypt failed → return null để filter ra
                         return null;
                     }
                 }
-                
+
                 // Tin nhắn không encrypted hoặc không phải text → giữ nguyên (hiển thị bình thường)
                 return msg;
-                }))).filter(msg => msg !== null); // Filter ra các message không decrypt được
+            }))).filter(msg => msg !== null); // Filter ra các message không decrypt được
 
             // 5. Xử lý tin nhắn ĐÃ GỬI: Lấy plaintext từ localStorage và merge với data từ DB
             const sentMessages = sentMessagesFromDB.map(dbMsg => {
@@ -1158,13 +1156,13 @@ const ChatScreen = () => {
 
             console.log(`[LOAD_MESSAGES] PIN locked: ${receivedMessages.length} received from DB, ${sentMessages.length} sent from localStorage`);
 
-                // === METRICS: Track network data ===
-                const estimatedSize = res.data.length * 500;
-                performanceMetrics.trackNetworkRequest(estimatedSize, 'download');
-                performanceMetrics.trackRender('ChatScreen-SetMessages');
+            // === METRICS: Track network data ===
+            const estimatedSize = res.data.length * 500;
+            performanceMetrics.trackNetworkRequest(estimatedSize, 'download');
+            performanceMetrics.trackRender('ChatScreen-SetMessages');
 
-                // Reset image loading states when loading messages
-                setImageLoading({});
+            // Reset image loading states when loading messages
+            setImageLoading({});
         }
     };
 
@@ -1247,10 +1245,10 @@ const ChatScreen = () => {
         const encryptionService = require('../../services/encryptionService').default;
         const deviceService = require('../../services/deviceService').default;
         const pinService = require('../../services/pinService').default;
-        
+
         const currentMessages = messagesRef.current;
         console.log(`[DECRYPT_ALL_MESSAGES] Processing ${currentMessages.length} messages`);
-        
+
         // Lấy private key để decrypt tin nhắn nhận được
         let privateKey = null;
         try {
@@ -1260,7 +1258,7 @@ const ChatScreen = () => {
         } catch (error) {
             console.error('[DECRYPT_ALL_MESSAGES] Error getting private key:', error);
         }
-        
+
         // Lấy master key từ PIN (nếu đã unlock) - dùng state pinUnlocked thay vì pinService.isUnlocked()
         let masterKey = null;
         const isPinUnlocked = pinUnlocked; // Dùng state thay vì pinService.isUnlocked()
@@ -1275,29 +1273,29 @@ const ChatScreen = () => {
                 console.error('[DECRYPT_ALL_MESSAGES] Error getting master key:', error);
             }
         }
-        
+
         // CHỈ decrypt messages hiện tại, KHÔNG load lại từ DB
         // loadMessages() đã load từ DB rồi, không cần load lại
         const sortedAllMessages = [...currentMessages];
-        
+
         const updatedMessagesRaw = await Promise.all(sortedAllMessages.map(async (msg) => {
             // CRITICAL: Nếu đã có runtime_plain_text → giữ nguyên (không decrypt lại)
             // Điều này đảm bảo không làm mất plaintext đã decrypt trước đó
             if (msg.runtime_plain_text && typeof msg.runtime_plain_text === 'string' && msg.runtime_plain_text.trim() !== '') {
                 return msg;
             }
-            
+
             const isSentMessage = msg.sender_id === user.id;
             const isEncrypted = msg.is_encrypted === true;
             const isTextMessage = msg.message_type === 'text';
-            
+
             // TIN NHẮN ĐÃ GỬI: 
             // - Ưu tiên: Load plaintext từ localStorage (device đã gửi tin nhắn này)
             // - Nếu không có trong localStorage và có PIN unlock → thử decrypt với encrypted_for_sync (từ DB)
             // - Nếu không có cả 2 → KHÔNG hiển thị placeholder (tin nhắn từ thiết bị hiện tại luôn có trong localStorage)
             if (isSentMessage && isEncrypted && isTextMessage) {
                 let plaintext = null;
-                
+
                 // Debug: Log message info trước khi load
                 if (__DEV__) {
                     console.log(`[DECRYPT_ALL_MESSAGES] 🔍 Processing sent message:`, {
@@ -1306,7 +1304,7 @@ const ChatScreen = () => {
                         currentRuntimePlainText: msg.runtime_plain_text?.substring(0, 50) || 'null'
                     });
                 }
-                
+
                 // 1. Ưu tiên: Load từ localStorage (device đã gửi tin nhắn này)
                 try {
                     const localMessagePlaintextService = require('../../utils/localMessagePlaintextService').default;
@@ -1324,7 +1322,7 @@ const ChatScreen = () => {
                 } catch (error) {
                     console.error(`[DECRYPT_ALL_MESSAGES] ✗ Error loading sent message ${msg.id} from localStorage:`, error);
                 }
-                
+
                 // 2. Nếu không có trong localStorage và có PIN unlock → thử decrypt từ DB
                 if (!plaintext && isPinUnlocked && masterKey && msg.encrypted_for_sync) {
                     try {
@@ -1339,7 +1337,7 @@ const ChatScreen = () => {
                         plaintext = null; // Reset nếu có lỗi
                     }
                 }
-                
+
                 // Trả về message với plaintext (từ localStorage hoặc DB)
                 if (plaintext && plaintext.trim() !== '') {
                     return {
@@ -1353,7 +1351,7 @@ const ChatScreen = () => {
                     return null;
                 }
             }
-            
+
             // TIN NHẮN NHẬN ĐƯỢC: Decrypt với private key của device hiện tại
             if (!isSentMessage && isTextMessage) {
                 // Nếu có encrypted_for_receiver → decrypt
@@ -1380,7 +1378,7 @@ const ChatScreen = () => {
                         return null;
                     }
                 }
-                
+
                 // Nếu có content (plaintext, không encrypted) → hiển thị trực tiếp
                 if (msg.content && typeof msg.content === 'string' && msg.content.trim() !== '') {
                     return {
@@ -1391,23 +1389,23 @@ const ChatScreen = () => {
                         is_encrypted: false
                     };
                 }
-                
+
                 // Không decrypt được → return null để filter ra
                 return null;
             }
-            
+
             // Tin nhắn không encrypted hoặc không phải text → giữ nguyên (hiển thị bình thường)
             return msg;
         }));
-        
+
         // Filter ra các message không decrypt được (null)
         const updatedMessages = updatedMessagesRaw.filter(msg => msg !== null);
-        
+
         // Update state với messages đã decrypt (đã filter)
         const finalMessages = [...updatedMessages];
         messagesRef.current = finalMessages;
         setMessages(finalMessages);
-        
+
         const sentWithPlaintext = finalMessages.filter(m => m.sender_id === user.id && m.runtime_plain_text).length;
         const receivedWithPlaintext = finalMessages.filter(m => m.sender_id !== user.id && m.runtime_plain_text).length;
         console.log(`[DECRYPT_ALL_MESSAGES] Completed:`);
@@ -1445,7 +1443,7 @@ const ChatScreen = () => {
                 setShowPinModal(false);
                 setPinInput('');
                 setPinError('');
-                
+
                 // Reload lại cuộc trò chuyện từ DB (PIN unlocked → load tất cả từ DB)
                 console.log('[HANDLE_PIN_SUBMIT] PIN unlocked - Reloading messages from DB...');
                 await loadMessages();
@@ -1534,7 +1532,7 @@ const ChatScreen = () => {
                 // Tìm optimistic message để lấy ui_optimistic_text làm fallback
                 const optimisticMsg = prev.find(msg => msg.id === tempMessageId);
                 const optimisticText = optimisticMsg?.ui_optimistic_text;
-                
+
                 // Xóa optimistic message (temp-id) và thêm real message
                 const filtered = prev.filter(msg => msg.id !== tempMessageId);
                 const realMessage = {
@@ -1544,20 +1542,20 @@ const ChatScreen = () => {
                     hasValidPlaintext: !!(plaintextFromLocal || optimisticText),
                     decryption_error: false
                 };
-                
+
                 console.log(`[SEND_MESSAGE] 🔄 Thay thế optimistic message:`, {
                     messageId: res.data.id,
                     hasPlaintextFromLocal: !!plaintextFromLocal,
                     hasOptimisticText: !!optimisticText,
                     finalRuntimePlainText: realMessage.runtime_plain_text?.substring(0, 50)
                 });
-                
+
                 // Với inverted FlatList, message mới nhất phải ở index 0
                 const updated = mergeMessages([realMessage, ...filtered]);
                 messagesRef.current = updated;
                 return updated;
             });
-            
+
             setMessageText('');
 
             // Re-check localStorage cho tất cả messages (để đảm bảo plaintext được load)
@@ -2139,7 +2137,7 @@ const ChatScreen = () => {
                             // Placeholder chỉ hiển thị cho tin nhắn từ thiết bị khác (khi sync từ cloud)
                             // Nhưng với kiến trúc hiện tại, tin nhắn đã gửi luôn có trong localStorage
                             // Nên không cần hiển thị placeholder
-                            
+
                             // Tin nhắn nhận được: đã decrypt trong loadMessages, luôn có plaintext
                             // Không cần check và return null
 
@@ -2195,7 +2193,7 @@ const ChatScreen = () => {
                                                             </Text>
                                                         );
                                                     }
-                                                    
+
                                                     // Debug: Log nếu không có text
                                                     if (__DEV__ && !hasUiOptimisticText && !hasRuntimePlainText) {
                                                         console.warn('[RENDER_SELF_MESSAGE] ⚠️ Self message không có text:', {
@@ -2260,14 +2258,14 @@ const ChatScreen = () => {
                                                     // Nếu không có displayText, dùng content hoặc empty string
                                                     const fallbackText = message.content || '';
                                                     if (fallbackText) {
-                                                    return (
+                                                        return (
                                                             <Text style={[
                                                                 styles.messageText,
                                                                 isOwn ? styles.ownText : styles.otherText
                                                             ]}>
                                                                 {fallbackText}
                                                             </Text>
-                                                    );
+                                                        );
                                                     }
                                                     // Nếu không có gì cả, không hiển thị
                                                     return null;

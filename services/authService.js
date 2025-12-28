@@ -123,11 +123,7 @@ export const signInWithMicrosoft = async () => {
                 errorDescription = url.searchParams.get('error_description');
             }
 
-            if (error) {
-                console.error('OAuth error from redirect:', error, errorDescription);
-                Alert.alert('Lỗi đăng nhập', errorDescription || error);
-                return { success: false, error: error };
-            }
+
 
             if (accessToken) {
                 // Bước 4: Lấy session từ Supabase
@@ -163,9 +159,6 @@ export const signInWithMicrosoft = async () => {
             }
         }
 
-        // Nếu không có access_token trong URL, đợi một chút rồi kiểm tra session
-        // (Supabase có thể xử lý redirect tự động thông qua onAuthStateChange)
-        console.log('Waiting for session...');
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         const { data: { session }, error: getSessionError } = await supabase.auth.getSession();

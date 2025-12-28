@@ -614,14 +614,15 @@ export const sendMessage = async (data) => {
                 // 2. Tự động fetch PIN từ database (không cần unlock)
                 const pinData = await pinService.fetchPinFromDatabase(data.sender_id);
                 if (!pinData || !pinData.pin || !pinData.pinSalt) {
-                    return { 
-                        success: false, 
+                    return {
+                        success: false,
                         requiresPinSetup: true,
-                        msg: 'Vui lòng thiết lập PIN để gửi tin nhắn mã hóa' 
+                        msg: 'Vui lòng thiết lập PIN để gửi tin nhắn mã hóa'
                     };
                 }
 
                 // 3. Tạo master key từ PIN + salt (cho sync)
+                //derveUnlock sử dụng thuật toán PBKDF2 tạo ra masterkey là từ PIN và PIN.salt (salt là ký tự ngẫu nhiên được tạo khi user tạo PIN)
                 const masterKey = await pinService.deriveUnlockKey(pinData.pin, pinData.pinSalt);
                 if (!masterKey || masterKey.length !== 32) {
                     throw new Error('Failed to derive master key');
@@ -629,8 +630,9 @@ export const sendMessage = async (data) => {
 
                 // 4. Lấy TẤT CẢ devices hợp lệ của receiver để encrypt cho mỗi device
                 const deviceService = require('./deviceService').default;
+                //lấy ra các deivce của userID
                 const validRecipientDevices = await deviceService.getValidRecipientDevices(receiverId);
-                
+
                 if (!validRecipientDevices || validRecipientDevices.length === 0) {
                     console.error('[sendMessage] Receiver has no valid devices. Receiver ID:', receiverId);
                     throw new Error('Receiver chưa có key pair. Vui lòng yêu cầu receiver đăng nhập lại để tạo key pair.');
@@ -660,7 +662,7 @@ export const sendMessage = async (data) => {
 
                 // Xóa content (plaintext) trước khi insert để không lưu vào DB
                 const { content, ...dataWithoutContent } = data;
-                
+
                 const { data: message, error: messageError } = await supabase
                     .from('messages')
                     .insert({
@@ -753,9 +755,7 @@ export const getMessages = async (conversationId, userId, limit = 50, offset = 0
         // Lấy device ID hiện tại
         const deviceId = await deviceService.getOrCreateDeviceId();
 
-        // NEW ARCHITECTURE: 
-        // - Nếu includeSentMessages = false: Chỉ query tin nhắn NHẬN được (sender_id !== userId)
-        // - Nếu includeSentMessages = true: Query CẢ tin nhắn đã gửi và nhận được (để decrypt với PIN)
+
         let query = supabase
             .from('messages')
             .select(`
@@ -767,19 +767,15 @@ export const getMessages = async (conversationId, userId, limit = 50, offset = 0
                 )
             `)
             .eq('conversation_id', conversationId);
-        
+
         if (!includeSentMessages) {
             // Chỉ lấy tin nhắn nhận được
             query = query.neq('sender_id', userId);
         }
-        // Nếu includeSentMessages = true → lấy tất cả (không filter sender_id)
-        
         const { data, error } = await query
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
 
-        // Include encrypted_aes_key_by_pin và encryption_version trong select
-        // (Đã có trong * nhưng đảm bảo rõ ràng)
 
         if (error) {
             console.log('getMessages error:', error);
@@ -806,9 +802,6 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
     try {
         // Lấy device ID hiện tại
         const deviceId = await deviceService.getOrCreateDeviceId();
-
-        // NEW ARCHITECTURE: Chỉ query tin nhắn NHẬN được (sender_id !== userId)
-        // Tin nhắn đã gửi sẽ được lấy từ localStorage, không query từ DB
         const { data: messages, error } = await supabase
             .from('messages')
             .select(`
@@ -823,9 +816,6 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
             .gt('created_at', sinceTimestamp)
             .neq('sender_id', userId) // CHỈ lấy tin nhắn nhận được
             .order('created_at', { ascending: false });
-
-        // Include encrypted_aes_key_by_pin và encryption_version trong select
-        // (Đã có trong * nhưng đảm bảo rõ ràng)
 
         if (error) {
             console.error('Error fetching new messages:', error);
@@ -842,7 +832,6 @@ export const getNewMessages = async (conversationId, userId, sinceTimestamp, exc
             return [];
         }
 
-        // Trả về messages từ DB, không xử lý gì thêm (decrypt sẽ được thực hiện trong UI)
         // Reverse để hiển thị từ cũ đến mới
         return filteredMessages.reverse();
     } catch (error) {
