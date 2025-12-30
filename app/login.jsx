@@ -259,7 +259,12 @@ if (data.session && data.user) {
                     </View>
 
                     {/* form */}
-                    <View style={styles.form}>
+                    <View style={styles.form} pointerEvents={loading ? 'none' : 'auto'}>
+                        {loading && (
+                          <View style={styles.loadingOverlay}>
+                            <ActivityIndicator size="large" color={theme.colors.primary} />
+                          </View>
+                        )}
                         <Text style={{ fontSize: hp(1.5), color: theme.colors.text }}>
                             Nhấn nút Đăng nhập để tiếp tục
                         </Text>
@@ -267,18 +272,20 @@ if (data.session && data.user) {
                             icon={<Icon name="mail" size={26} strokeWidth={1.6} />}
                             placeholder='Nhập email'
                             onChangeText={value => emailRef.current = value}
+                            editable={!loading}
                         />
                         <Input
                             icon={<Icon name="lock" size={26} strokeWidth={1.6} />}
                             placeholder='Nhập mật khẩu'
                             secureTextEntry
                             onChangeText={value => passwordRef.current = value}
+                            editable={!loading}
                         />
                         <Text style={styles.forgotPassword}>
                             Quên mật khẩu ?
                         </Text>
                         {/* button */}
-                        <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} />
+                        <Button title={'Đăng nhập'} loading={loading} onPress={onSubmit} disabled={loading} />
                        
                         <Recaptcha
                 ref={recaptchaRef}
@@ -462,5 +469,15 @@ const styles = StyleSheet.create({
         color: '#FFFFFF',
         fontSize: hp(1.8),
         fontWeight: theme.fonts.semibold,
+    },
+
+    // Thêm style cho overlay loading
+    loadingOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(255,255,255,0.7)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10,
+        borderRadius: theme.radius.lg,
     },
 });

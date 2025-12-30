@@ -178,54 +178,45 @@ class DeviceService {
     // QUAN TRỌNG: Không bao giờ regenerate privateKey nếu đã tồn tại
     async getOrCreatePrivateKey(userId) {
         //kiểm tra cache trong memory xem có private key chưa có thì sử dụng
+        console.log('[DeviceService] Bắt đầu lấy/tạo private key cho user:', userId);
         if (this.devicePrivateKey && this.currentUserId === userId) {
+            console.log('[DeviceService] Đã có private key trong cache cho user:', userId);
             return this.devicePrivateKey;
         }
 
-        // nếu userID khác với userID hiện tại thì xóa cache private key ( phục vụ cho chắc năng đăng xuất )
         if (this.currentUserId !== userId) {
+            console.log('[DeviceService] User ID thay đổi, xóa cache private key. User mới:', userId);
             this.devicePrivateKey = null;
             this.currentUserId = userId;
         }
 
         try {
-
-            // chưa tối ưu 
             const isE2EAvailable = await checkE2ECapability();
             if (!isE2EAvailable) {
+                console.log('[DeviceService] E2E encryption không khả dụng. Cần build Dev Client.');
                 throw new Error('E2E encryption not available. Please use development build.');
             }
-            //có thể xoá 
 
-
-            //lấy tên thiết bị ( nếu chưa có thì tạo)
             const deviceId = await this.getOrCreateDeviceId();
             const keyName = `device_private_key_${userId}_${deviceId}`;
 
-            //kiểm tra privated key có ở secure store chưa
             let privateKey = await SecureStore.getItemAsync(keyName);
-
-            let publicKey = null;
             if (!privateKey) {
-                // chưa có thì tạo
+                console.log('[DeviceService] Không tìm thấy private key trong SecureStore, sẽ tạo mới.');
                 const keyPair = await this.generateKeyPair();
-                publicKey = keyPair.publicKey;
+                const publicKey = keyPair.publicKey;
                 privateKey = keyPair.privateKey;
-
-                // Lưu private key vào SecureStore
                 await SecureStore.setItemAsync(keyName, privateKey);
-
-                // Register device lên server với public key
                 const deviceName = await this.getDeviceName();
                 await this.registerDevice(userId, deviceId, publicKey, deviceName);
-
                 console.log('🔑 [KEY_PAIR_CREATED] New key pair generated:');
                 console.log('  - Device ID:', deviceId);
                 console.log('  - User ID:', userId);
                 console.log('  - Private Key (first 50 chars):', privateKey.substring(0, 50) + '...');
                 console.log('  - Public Key (first 50 chars):', publicKey.substring(0, 50) + '...');
             } else {
-                // Đã có private key, kiểm tra public key trong database
+                console.log('[DeviceService] Đã tìm thấy private key trong SecureStore, kiểm tra public key trên server.');
+                let publicKey = null;
                 try {
                     const { data: device } = await supabase
                         .from('user_devices')
@@ -233,7 +224,6 @@ class DeviceService {
                         .eq('user_id', userId)
                         .eq('device_id', deviceId)
                         .single();
-
                     if (device && device.public_key) {
                         publicKey = device.public_key;
                         console.log('🔑 [KEY_PAIR_LOADED] Existing key pair loaded:');
@@ -242,22 +232,14 @@ class DeviceService {
                         console.log('  - Private Key (first 50 chars):', privateKey.substring(0, 50) + '...');
                         console.log('  - Public Key (first 50 chars):', publicKey.substring(0, 50) + '...');
                     } else {
-                        // Private key tồn tại nhưng public key không có trong database
-                        // Tạo lại key pair mới và lưu cả 2
-
-                        // Generate key pair mới
+                        console.log('[DeviceService] Private key có nhưng không tìm thấy public key trên server, sẽ tạo lại key pair.');
                         const keyPair = await this.generateKeyPair();
                         const newPublicKey = keyPair.publicKey;
                         const newPrivateKey = keyPair.privateKey;
-
-                        // Lưu private key mới vào SecureStore (thay thế cũ)
                         await SecureStore.setItemAsync(keyName, newPrivateKey);
-                        privateKey = newPrivateKey; // Update privateKey để return
-
-                        // Register device với public key mới
+                        privateKey = newPrivateKey;
                         const deviceName = await this.getDeviceName();
                         await this.registerDevice(userId, deviceId, newPublicKey, deviceName);
-
                         publicKey = newPublicKey;
                         console.log(' [KEY_PAIR_REGENERATED] Key pair regenerated and saved:');
                         console.log('  - Device ID:', deviceId);
@@ -266,22 +248,15 @@ class DeviceService {
                         console.log('  - Public Key (first 50 chars):', publicKey.substring(0, 50) + '...');
                     }
                 } catch (error) {
-                    // Nếu không fetch được hoặc không có device → tạo lại key pair
-
+                    console.log('[DeviceService] Lỗi khi kiểm tra public key trên server, sẽ tạo lại key pair.');
                     try {
-                        // Generate key pair mới
                         const keyPair = await this.generateKeyPair();
                         const newPublicKey = keyPair.publicKey;
                         const newPrivateKey = keyPair.privateKey;
-
-                        // Lưu private key mới vào SecureStore (thay thế cũ)
                         await SecureStore.setItemAsync(keyName, newPrivateKey);
-                        privateKey = newPrivateKey; // Update privateKey để return
-
-                        // Register device với public key mới
+                        privateKey = newPrivateKey;
                         const deviceName = await this.getDeviceName();
                         await this.registerDevice(userId, deviceId, newPublicKey, deviceName);
-
                         publicKey = newPublicKey;
                         console.log('✅ [KEY_PAIR_REGENERATED] Key pair regenerated and saved:');
                         console.log('  - Device ID:', deviceId);
@@ -290,19 +265,16 @@ class DeviceService {
                         console.log('  - Public Key (first 50 chars):', publicKey.substring(0, 50) + '...');
                     } catch (regenerateError) {
                         console.error('❌ [KEY_PAIR_REGENERATED] Failed to regenerate key pair:', regenerateError);
-                        // Vẫn return privateKey cũ nếu regenerate thất bại
                     }
                 }
             }
-
-            // Validate privateKey không null
             if (!privateKey || privateKey.length === 0) {
+                console.log('[DeviceService] Private key null hoặc rỗng sau khi lấy/tạo!');
                 throw new Error('Private key is null or empty after loading');
             }
-
-            // Cache private key vào memory và lưu userId
             this.devicePrivateKey = privateKey;
             this.currentUserId = userId;
+            console.log('[DeviceService] Hoàn thành lấy/tạo private key cho user:', userId);
             return privateKey;
         } catch (error) {
             console.error('[DeviceService] Error getting private key:', error);

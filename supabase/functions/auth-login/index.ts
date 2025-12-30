@@ -5,8 +5,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 console.log("Auth-Login Function Started (Debug Mode)");
 
-const MAX_REQUESTS = 5;       
-const WINDOW_MINUTES = 5;     
+const MAX_REQUESTS = 3;       
+const WINDOW_MINUTES = 1;     // Đảm bảo là 1 phút
 
 serve(async (req) => {
   if (req.method !== 'POST') {
@@ -50,7 +50,7 @@ serve(async (req) => {
         console.log(`[BLOCK] IP ${clientIP} đã bị chặn.`);
         return new Response(
           JSON.stringify({ 
-            message: `Bạn thao tác quá nhanh! Vui lòng thử lại sau ${WINDOW_MINUTES} phút.` 
+            message: `Bạn thao tác quá nhanh! Vui lòng thử lại sau 1 phút.`
           }),
           { status: 429, headers: { 'Content-Type': 'application/json' } }
         );
@@ -85,7 +85,7 @@ serve(async (req) => {
       console.log("[FAIL] reCAPTCHA sai.");
       await logAttempt(false); 
       return new Response(
-        JSON.stringify({ message: 'Xác minh Robot thất bại.' }),
+        JSON.stringify({ message: 'Đăng nhập sai.' }),
         { status: 403, headers: { 'Content-Type': 'application/json' } }
       );
     }
