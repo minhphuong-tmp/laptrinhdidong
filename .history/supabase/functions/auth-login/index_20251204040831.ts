@@ -85,7 +85,7 @@ serve(async (req) => {
       console.log("[FAIL] reCAPTCHA sai.");
       await logAttempt(false); 
       return new Response(
-        JSON.stringify({ message: 'Xác minh Robot thất bại.' }),
+        JSON.stringify({ message: 'Đăng nhập sai.' }),
         { status: 403, headers: { 'Content-Type': 'application/json' } }
       );
     }
