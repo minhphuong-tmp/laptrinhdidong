@@ -84,15 +84,62 @@ class CallManager {
         return Math.min(2000 * Math.pow(2, attempt), 32000); // 2s, 4s, 8s, 16s, 32s max
     }
 
+    // Auto-reconnect state for voice message channel
+    voiceMessageReconnectAttempts = 0;
+    maxVoiceMessageReconnectAttempts = 5;
+    voiceMessageReconnectTimer = null;
+    voiceMessageChannel = null;
+
+    // Calculate exponential backoff delay for voice message channel
+    getVoiceMessageBackoffDelay(attempt) {
+        return Math.min(2000 * Math.pow(2, attempt), 32000); // 2s, 4s, 8s, 16s, 32s max
+    }
+
+    // Handle voice message channel error with auto-reconnect
+    handleVoiceMessageChannelError() {
+        if (this.voiceMessageReconnectAttempts >= this.maxVoiceMessageReconnectAttempts) {
+            // Max attempts reached, silently stop retrying
+            return;
+        }
+
+        // Clear existing timer
+        if (this.voiceMessageReconnectTimer) {
+            clearTimeout(this.voiceMessageReconnectTimer);
+        }
+
+        const delay = this.getVoiceMessageBackoffDelay(this.voiceMessageReconnectAttempts);
+        this.voiceMessageReconnectAttempts += 1;
+
+        // Auto-reconnect after delay (silent, no logging)
+        this.voiceMessageReconnectTimer = setTimeout(() => {
+            this.voiceMessageReconnectTimer = null;
+            if (this.currentUserId) {
+                // Reset flag to allow re-subscription
+                this.hasVoiceMessageListener = false;
+                this.setupVoiceMessageListener();
+            }
+        }, delay);
+    }
+
     // Setup voice message listener (persistent, even after call ended)
     setupVoiceMessageListener() {
-        if (this.hasVoiceMessageListener || !this.currentUserId) {
+        if (!this.currentUserId) {
             return;
+        }
+
+        // Unsubscribe from existing channel if any
+        if (this.voiceMessageChannel) {
+            try {
+                supabase.removeChannel(this.voiceMessageChannel);
+            } catch (e) {
+                // Ignore errors when removing channel
+            }
+            this.voiceMessageChannel = null;
         }
 
         const channelName = `voice-messages-${this.currentUserId}`;
 
-        const voiceChannel = supabase
+        this.voiceMessageChannel = supabase
             .channel(channelName)
             .on('postgres_changes', {
                 event: 'INSERT',
@@ -116,8 +163,18 @@ class CallManager {
             .subscribe((status) => {
                 if (status === 'SUBSCRIBED') {
                     this.hasVoiceMessageListener = true;
-                } else if (status === 'CHANNEL_ERROR') {
-                    console.error('Voice message channel subscription error');
+                    this.voiceMessageReconnectAttempts = 0; // Reset on successful subscription
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    this.hasVoiceMessageListener = false;
+                    // Auto-reconnect silently (no error logging)
+                    this.handleVoiceMessageChannelError();
+                } else if (status === 'CLOSED') {
+                    this.hasVoiceMessageListener = false;
+                    // Auto-reconnect on close if still needed
+                    if (this.currentUserId) {
+                        this.voiceMessageReconnectAttempts = 0; // Reset attempts for close event
+                        this.handleVoiceMessageChannelError();
+                    }
                 }
             });
     }
@@ -252,20 +309,13 @@ class CallManager {
                 }
             })
             .subscribe((status) => {
-                const timestamp = new Date().toISOString();
-
                 if (status === 'SUBSCRIBED') {
                     this.isSubscribed = true;
                     this.subscriptionAttempts = 0;
-                } else if (status === 'CHANNEL_ERROR') {
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
                     this.isSubscribed = false;
                     this.subscriptionAttempts += 1;
-                    console.error('Call channel subscription error');
-                    this.handleSubscriptionError();
-                } else if (status === 'TIMED_OUT') {
-                    this.isSubscribed = false;
-                    this.subscriptionAttempts += 1;
-                    console.error('Call channel subscription timed out');
+                    // Auto-reconnect silently (no error logging)
                     this.handleSubscriptionError();
                 } else if (status === 'CLOSED') {
                     this.isSubscribed = false;
@@ -274,10 +324,10 @@ class CallManager {
             });
     }
 
-    // Handle subscription error with exponential backoff retry
+    // Handle subscription error with exponential backoff retry (silent)
     handleSubscriptionError() {
         if (this.subscriptionAttempts >= this.maxSubscriptionAttempts) {
-            console.error('Max subscription attempts reached');
+            // Max attempts reached, silently stop retrying
             return;
         }
 
@@ -287,9 +337,12 @@ class CallManager {
             clearTimeout(this.reconnectTimer);
         }
 
+        // Auto-reconnect after delay (silent, no error logging)
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
-            this.subscribeToCallChannel();
+            if (this.currentUserId) {
+                this.subscribeToCallChannel();
+            }
         }, delay);
     }
 
@@ -305,10 +358,14 @@ class CallManager {
 
     // Stop listening for calls
     stopListening() {
-        // Clear reconnect timer
+        // Clear reconnect timers
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+        if (this.voiceMessageReconnectTimer) {
+            clearTimeout(this.voiceMessageReconnectTimer);
+            this.voiceMessageReconnectTimer = null;
         }
 
         // Unsubscribe from call channel
@@ -322,8 +379,20 @@ class CallManager {
             this.callChannel = null;
         }
 
+        // Unsubscribe from voice message channel
+        if (this.voiceMessageChannel) {
+            try {
+                this.voiceMessageChannel.unsubscribe();
+                supabase.removeChannel(this.voiceMessageChannel);
+            } catch (e) {
+                // Ignore error removing voice message channel
+            }
+            this.voiceMessageChannel = null;
+        }
+
         this.isListening = false;
         this.isSubscribed = false;
+        this.hasVoiceMessageListener = false;
         this.subscriptionAttempts = 0;
     }
 

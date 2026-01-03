@@ -48,6 +48,11 @@ class WebRTCService {
     constructor() {
         this.socket = null;
         this.peerConnection = null;
+        // Auto-reconnect state for signaling channel
+        this.signalingReconnectAttempts = 0;
+        this.maxSignalingReconnectAttempts = 5;
+        this.signalingReconnectTimer = null;
+        this.isSignalingSubscribed = false;
         this.localStream = null;
         // remoteStream được quản lý bởi updateRemoteStream/clearRemoteStream
         // Khởi tạo null - không cần log vì đây là constructor
@@ -100,17 +105,48 @@ class WebRTCService {
         }
     }
 
-    // Setup Supabase Realtime for signaling
-    setupSignalingChannel() {
-        if (!this.currentUserId) {
-            console.warn('⚠️ Cannot setup signaling channel: no currentUserId');
+    // Calculate exponential backoff delay for signaling channel
+    getSignalingBackoffDelay(attempt) {
+        return Math.min(2000 * Math.pow(2, attempt), 32000); // 2s, 4s, 8s, 16s, 32s max
+    }
+
+    // Handle signaling channel error with auto-reconnect
+    handleSignalingChannelError() {
+        if (this.signalingReconnectAttempts >= this.maxSignalingReconnectAttempts) {
+            // Max attempts reached, silently stop retrying
             return;
         }
 
+        // Clear existing timer
+        if (this.signalingReconnectTimer) {
+            clearTimeout(this.signalingReconnectTimer);
+        }
+
+        const delay = this.getSignalingBackoffDelay(this.signalingReconnectAttempts);
+        this.signalingReconnectAttempts += 1;
+
+        // Auto-reconnect after delay (silent, no logging)
+        this.signalingReconnectTimer = setTimeout(() => {
+            this.signalingReconnectTimer = null;
+            if (this.currentUserId) {
+                this.setupSignalingChannel();
+            }
+        }, delay);
+    }
+
+    // Setup Supabase Realtime for signaling
+    setupSignalingChannel() {
+        if (!this.currentUserId) {
+            return;
+        }
 
         // Unsubscribe from existing channel if any
         if (this.signalingChannel) {
-            supabase.removeChannel(this.signalingChannel);
+            try {
+                supabase.removeChannel(this.signalingChannel);
+            } catch (e) {
+                // Ignore errors when removing channel
+            }
         }
 
         const channelName = `webrtc-signaling-${this.currentUserId}`;
@@ -129,15 +165,27 @@ class WebRTCService {
                     }
                     await this.handleSignalingData(payload.new);
                 } catch (error) {
-                    // Only log critical errors
+                    // Only log critical errors (not channel errors)
                     if (error.message && !error.message.includes('wrong state') && !error.message.includes('sdpMLineIndex')) {
-                        console.error('❌ Error in signaling callback:', error.message);
+                        // Silent error handling - no console.error
                     }
                 }
             })
             .subscribe((status) => {
-                if (status === 'CHANNEL_ERROR') {
-                    console.error('❌ Signaling channel subscription error');
+                if (status === 'SUBSCRIBED') {
+                    this.isSignalingSubscribed = true;
+                    this.signalingReconnectAttempts = 0; // Reset on successful subscription
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    this.isSignalingSubscribed = false;
+                    // Auto-reconnect silently (no error logging)
+                    this.handleSignalingChannelError();
+                } else if (status === 'CLOSED') {
+                    this.isSignalingSubscribed = false;
+                    // Auto-reconnect on close if still needed
+                    if (this.currentUserId) {
+                        this.signalingReconnectAttempts = 0; // Reset attempts for close event
+                        this.handleSignalingChannelError();
+                    }
                 }
             });
 
@@ -2285,9 +2333,26 @@ class WebRTCService {
     async destroy() {
         try {
             await this.endCall();
+            
+            // Cleanup signaling channel reconnect timer
+            if (this.signalingReconnectTimer) {
+                clearTimeout(this.signalingReconnectTimer);
+                this.signalingReconnectTimer = null;
+            }
+            
+            // Remove signaling channel
+            if (this.signalingChannel) {
+                try {
+                    supabase.removeChannel(this.signalingChannel);
+                } catch (e) {
+                    // Ignore errors
+                }
+                this.signalingChannel = null;
+            }
+            
             return { success: true };
         } catch (error) {
-            console.error('Destroy error:', error);
+            // Silent error handling
             return { success: false, error: error.message };
         }
     }

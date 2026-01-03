@@ -35,7 +35,6 @@ import {
     getMessages,
     markConversationAsRead,
     sendMessage,
-    splitFileIntoChunks,
     uploadMediaFile
 } from '../../services/chatService';
 import pinService from '../../services/pinService';
@@ -1605,8 +1604,19 @@ const ChatScreen = () => {
 
     const handleImagePicker = async () => {
         try {
-            // Request permissions trước khi mở gallery
-            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            // Check permission status trước
+            const permissionStatus = await ImagePicker.getMediaLibraryPermissionsAsync();
+            console.log('📸 [Image Picker] Permission status:', permissionStatus);
+
+            // Request permissions nếu chưa có
+            let { status } = permissionStatus;
+            if (status !== 'granted') {
+                console.log('📸 [Image Picker] Requesting permission...');
+                const requestResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                status = requestResult.status;
+                console.log('📸 [Image Picker] Permission request result:', requestResult);
+            }
+
             if (status !== 'granted') {
                 Alert.alert(
                     'Quyền truy cập',
@@ -1616,6 +1626,7 @@ const ChatScreen = () => {
                 return;
             }
 
+            console.log('📸 [Image Picker] Opening gallery...');
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Images,
                 allowsEditing: true,
@@ -1623,22 +1634,53 @@ const ChatScreen = () => {
                 quality: 0.7,
             });
 
-            if (!result.canceled && result.assets[0]) {
-                const image = result.assets[0];
+            console.log('📸 [Image Picker] Result:', {
+                canceled: result.canceled,
+                assetsCount: result.assets?.length || 0,
+                hasAssets: !!result.assets?.[0],
+                resultKeys: Object.keys(result)
+            });
 
-                console.log('Selected image:', image);
+            if (!result.canceled && result.assets && result.assets[0]) {
+                const image = result.assets[0];
+                console.log('📸 [Image Picker] Selected image:', {
+                    uri: image.uri,
+                    width: image.width,
+                    height: image.height,
+                    fileSize: image.fileSize,
+                    type: image.type
+                });
                 await sendMediaMessage(image, 'image');
+            } else {
+                console.log('📸 [Image Picker] No image selected or result canceled');
+                if (result.canceled) {
+                    console.log('📸 [Image Picker] User canceled selection');
+                } else {
+                    console.log('📸 [Image Picker] Result has no assets');
+                }
             }
         } catch (error) {
-            console.error('Error picking image:', error);
-            Alert.alert('Lỗi', 'Không thể chọn ảnh');
+            console.error('❌ [Image Picker] Error:', error);
+            console.error('❌ [Image Picker] Error details:', JSON.stringify(error, null, 2));
+            Alert.alert('Lỗi', `Không thể chọn ảnh: ${error.message || 'Unknown error'}`);
         }
     };
 
     const handleVideoPicker = async () => {
         try {
-            // Request permissions trước khi mở gallery
-            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            // Check permission status trước
+            const permissionStatus = await ImagePicker.getMediaLibraryPermissionsAsync();
+            console.log('🎥 [Video Picker] Permission status:', permissionStatus);
+
+            // Request permissions nếu chưa có
+            let { status } = permissionStatus;
+            if (status !== 'granted') {
+                console.log('🎥 [Video Picker] Requesting permission...');
+                const requestResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                status = requestResult.status;
+                console.log('🎥 [Video Picker] Permission request result:', requestResult);
+            }
+
             if (status !== 'granted') {
                 Alert.alert(
                     'Quyền truy cập',
@@ -1648,28 +1690,89 @@ const ChatScreen = () => {
                 return;
             }
 
+            console.log('🎥 [Video Picker] Opening gallery...');
+            // Trên Android/MIUI, MediaTypeOptions.Videos có thể không hiển thị video
+            // Dùng MediaTypeOptions.All ngay từ đầu, sau đó filter video
+            console.log('🎥 [Video Picker] Using MediaTypeOptions.All to show all media...');
             const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-                allowsEditing: true,
+                mediaTypes: ImagePicker.MediaTypeOptions.All, // Hiển thị cả ảnh và video
+                allowsEditing: false, // Bỏ editing cho video trên Android
                 quality: 0.7,
             });
 
-            if (!result.canceled && result.assets[0]) {
-                const video = result.assets[0];
+            console.log('🎥 [Video Picker] Result:', {
+                canceled: result.canceled,
+                assetsCount: result.assets?.length || 0,
+                hasAssets: !!result.assets?.[0],
+                allAssets: result.assets?.map(a => ({
+                    type: a.type,
+                    uri: a.uri?.substring(0, 50) + '...',
+                    mimeType: a.mimeType
+                })) || []
+            });
 
-                console.log('Selected video:', {
-                    uri: video.uri,
-                    fileSize: video.fileSize,
-                    fileSizeMB: video.fileSize ? (video.fileSize / (1024 * 1024)).toFixed(2) + 'MB' : 'Unknown',
-                    duration: video.duration,
-                    width: video.width,
-                    height: video.height
+            // Filter chỉ lấy video từ kết quả
+            if (!result.canceled && result.assets && result.assets.length > 0) {
+                const videos = result.assets.filter(asset => {
+                    const isVideo =
+                        asset.type === 'video' ||
+                        asset.uri?.toLowerCase().includes('.mp4') ||
+                        asset.uri?.toLowerCase().includes('.mov') ||
+                        asset.uri?.toLowerCase().includes('.avi') ||
+                        asset.uri?.toLowerCase().includes('.mkv') ||
+                        asset.mimeType?.toLowerCase().includes('video');
+
+                    console.log('🎥 [Video Picker] Checking asset:', {
+                        uri: asset.uri?.substring(0, 50),
+                        type: asset.type,
+                        mimeType: asset.mimeType,
+                        isVideo: isVideo
+                    });
+
+                    return isVideo;
                 });
-                await sendMediaMessage(video, 'video');
+
+                console.log('🎥 [Video Picker] Filtered videos count:', videos.length);
+
+                if (videos.length > 0) {
+                    // Chỉ lấy video đầu tiên
+                    const selectedVideo = videos[0];
+                    console.log('🎥 [Video Picker] Selected video:', {
+                        uri: selectedVideo.uri,
+                        fileSize: selectedVideo.fileSize,
+                        fileSizeMB: selectedVideo.fileSize ? (selectedVideo.fileSize / (1024 * 1024)).toFixed(2) + 'MB' : 'Unknown',
+                        duration: selectedVideo.duration,
+                        width: selectedVideo.width,
+                        height: selectedVideo.height,
+                        type: selectedVideo.type
+                    });
+                    await sendMediaMessage(selectedVideo, 'video');
+                    return; // Thoát sớm nếu đã chọn video
+                } else {
+                    console.log('🎥 [Video Picker] No videos found in assets. Showing alert...');
+                    Alert.alert(
+                        'Không tìm thấy video',
+                        'Không tìm thấy video trong thư viện. Vui lòng đảm bảo bạn có video trong thiết bị.',
+                        [{ text: 'OK' }]
+                    );
+                    return;
+                }
+            } else if (result.canceled) {
+                console.log('🎥 [Video Picker] User canceled selection');
+                return;
+            } else {
+                console.log('🎥 [Video Picker] No assets returned');
+                Alert.alert(
+                    'Không có media',
+                    'Không tìm thấy ảnh hoặc video nào trong thư viện.',
+                    [{ text: 'OK' }]
+                );
             }
+
+            // Logic xử lý đã được di chuyển lên trên (trong phần filter)
         } catch (error) {
-            console.error('Error picking video:', error);
-            console.error('Error details:', JSON.stringify(error, null, 2));
+            console.error('❌ [Video Picker] Error:', error);
+            console.error('❌ [Video Picker] Error details:', JSON.stringify(error, null, 2));
             Alert.alert('Lỗi', `Không thể chọn video: ${error.message || 'Unknown error'}`);
         }
     };
@@ -1683,18 +1786,43 @@ const ChatScreen = () => {
         console.log(`🚀 [Upload] Bắt đầu upload ${type}...`);
         console.log(`📦 [Upload] File size: ${file.fileSize ? (file.fileSize / (1024 * 1024)).toFixed(2) + 'MB' : 'Unknown'}`);
 
+        let previewMessageId = null;
+
         try {
-            // TEST: Chia file thành chunks để log (ngay cả khi file nhỏ)
-            console.log(`🧪 [Test Chunk] Bắt đầu test chia chunks...`);
-            try {
-                const chunks = await splitFileIntoChunks(file);
-                console.log(`🧪 [Test Chunk] Test chia chunks hoàn tất: ${chunks.length} chunks`);
-            } catch (chunkError) {
-                console.error(`🧪 [Test Chunk] Lỗi khi test chia chunks:`, chunkError);
-            }
+            // Callback để nhận thumbnail preview
+            const handlePreviewReady = (thumbnailUrl) => {
+                // Tạo optimistic message với thumbnail
+                const previewMessage = {
+                    id: `preview_${Date.now()}`,
+                    conversation_id: conversationId,
+                    sender_id: user.id,
+                    content: type === 'image' ? '📷 Hình ảnh' : '🎥 Video',
+                    message_type: type,
+                    file_url: thumbnailUrl, // Thumbnail URL
+                    thumbnail_url: thumbnailUrl, // Thumbnail field
+                    is_preview: true,
+                    created_at: new Date().toISOString(),
+                    sender: {
+                        id: user.id,
+                        name: user.name,
+                        image: user.image
+                    }
+                };
+                
+                previewMessageId = previewMessage.id;
+                
+                // Thêm preview message vào UI ngay
+                setMessages(prev => {
+                    const newMessages = mergeMessages([previewMessage, ...prev]);
+                    messagesRef.current = newMessages;
+                    return newMessages;
+                });
+                
+                console.log('✅ [Preview] Thumbnail preview added:', thumbnailUrl);
+            };
 
             // Tạo timeout cho upload (không giới hạn thời gian, nhưng giữ timeout để tránh treo)
-            const uploadPromise = uploadMediaFile(file, type);
+            const uploadPromise = uploadMediaFile(file, type, null, handlePreviewReady);
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Upload timeout')), 300000) // 5 phút
             );
@@ -1702,6 +1830,11 @@ const ChatScreen = () => {
             const uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
 
             if (!uploadResult.success) {
+                // Xóa preview message nếu có lỗi
+                if (previewMessageId) {
+                    setMessages(prev => prev.filter(msg => msg.id !== previewMessageId));
+                    messagesRef.current = messagesRef.current.filter(msg => msg.id !== previewMessageId);
+                }
                 Alert.alert('Lỗi', uploadResult.msg || 'Không thể upload file');
                 setUploading(false);
                 return;
@@ -1738,9 +1871,15 @@ const ChatScreen = () => {
                         image: user.image
                     }
                 };
+                
                 // Với inverted FlatList, message mới nhất phải ở index 0 → unshift vào đầu array
                 setMessages(prev => {
-                    const newMessages = mergeMessages([newMessage, ...prev]);
+                    // Xóa preview message nếu có
+                    const filteredPrev = previewMessageId 
+                        ? prev.filter(msg => msg.id !== previewMessageId)
+                        : prev;
+                    
+                    const newMessages = mergeMessages([newMessage, ...filteredPrev]);
                     // CRITICAL: Sync messagesRef ngay lập tức
                     messagesRef.current = newMessages;
                     return newMessages;
@@ -1748,9 +1887,19 @@ const ChatScreen = () => {
                 performanceMetrics.trackRender('ChatScreen-AddMessage');
 
             } else {
+                // Xóa preview message nếu gửi message fail
+                if (previewMessageId) {
+                    setMessages(prev => prev.filter(msg => msg.id !== previewMessageId));
+                    messagesRef.current = messagesRef.current.filter(msg => msg.id !== previewMessageId);
+                }
                 Alert.alert('Lỗi', messageResult.msg || 'Không thể gửi tin nhắn');
             }
         } catch (error) {
+            // Xóa preview message nếu có lỗi
+            if (previewMessageId) {
+                setMessages(prev => prev.filter(msg => msg.id !== previewMessageId));
+                messagesRef.current = messagesRef.current.filter(msg => msg.id !== previewMessageId);
+            }
             const totalTime = Date.now() - uploadStartTime;
             const totalTimeSeconds = (totalTime / 1000).toFixed(2);
             console.error('❌ [Upload] Error sending media message:', error);
@@ -2060,8 +2209,13 @@ const ChatScreen = () => {
                                         <Loading size="small" />
                                     </View>
                                 )}
+                                {message.is_preview && (
+                                    <View style={styles.previewOverlay}>
+                                        <Text style={styles.previewText}>Đang tải lên...</Text>
+                                    </View>
+                                )}
                                 <Image
-                                    source={{ uri: message.file_url }}
+                                    source={{ uri: message.is_preview ? (message.thumbnail_url || message.file_url) : message.file_url }}
                                     style={styles.messageImage}
                                     resizeMode="cover"
                                     onLoadStart={() => {
@@ -2093,6 +2247,9 @@ const ChatScreen = () => {
                             <TouchableOpacity
                                 style={styles.videoContainer}
                                 onPress={() => {
+                                    // Không cho phép play nếu đang là preview
+                                    if (message.is_preview) return;
+                                    
                                     const videoId = message.id;
                                     console.log('Video pressed, current playing:', playingVideo, 'videoId:', videoId);
 
@@ -2109,40 +2266,57 @@ const ChatScreen = () => {
                                     }
                                 }}
                             >
-                                <Video
-                                    ref={(ref) => {
-                                        if (ref) {
-                                            videoRefs.current[message.id] = ref;
-                                        }
-                                    }}
-                                    source={{ uri: message.file_url }}
-                                    style={styles.messageVideo}
-                                    useNativeControls={true}
-                                    resizeMode="cover"
-                                    shouldPlay={playingVideo === message.id}
-                                    onPlaybackStatusUpdate={(status) => {
-                                    }}
-                                    isLooping={false}
-                                    onError={(error) => {
-                                    }}
-                                    onLoadStart={() => {
-                                        videoLoadStart = Date.now();
-                                    }}
-                                    onLoad={() => {
-                                        const loaded = Date.now();
-                                        if (!loadedVideoIds.current.has(message.id) && videoLoadStart) {
-                                            const loadTime = loaded - videoLoadStart;
-                                            loadedVideoIds.current.add(message.id);
-                                            // Lưu thời gian load thay vì log ngay
-                                            videoLoadTimes.current.push({ id: message.id, time: loadTime });
-                                            checkAllMediaLoadedAndLog();
-                                        }
-                                    }}
-                                />
-                                {playingVideo !== message.id && (
-                                    <View style={styles.playButtonOverlay}>
-                                        <Text style={styles.playButtonText}>▶</Text>
-                                    </View>
+                                {message.is_preview ? (
+                                    // Hiển thị thumbnail cho preview
+                                    <>
+                                        <Image
+                                            source={{ uri: message.thumbnail_url || message.file_url }}
+                                            style={styles.messageVideo}
+                                            resizeMode="cover"
+                                        />
+                                        <View style={styles.previewOverlay}>
+                                            <Text style={styles.previewText}>Đang tải lên...</Text>
+                                        </View>
+                                    </>
+                                ) : (
+                                    // Hiển thị video bình thường
+                                    <>
+                                        <Video
+                                            ref={(ref) => {
+                                                if (ref) {
+                                                    videoRefs.current[message.id] = ref;
+                                                }
+                                            }}
+                                            source={{ uri: message.file_url }}
+                                            style={styles.messageVideo}
+                                            useNativeControls={true}
+                                            resizeMode="cover"
+                                            shouldPlay={playingVideo === message.id}
+                                            onPlaybackStatusUpdate={(status) => {
+                                            }}
+                                            isLooping={false}
+                                            onError={(error) => {
+                                            }}
+                                            onLoadStart={() => {
+                                                videoLoadStart = Date.now();
+                                            }}
+                                            onLoad={() => {
+                                                const loaded = Date.now();
+                                                if (!loadedVideoIds.current.has(message.id) && videoLoadStart) {
+                                                    const loadTime = loaded - videoLoadStart;
+                                                    loadedVideoIds.current.add(message.id);
+                                                    // Lưu thời gian load thay vì log ngay
+                                                    videoLoadTimes.current.push({ id: message.id, time: loadTime });
+                                                    checkAllMediaLoadedAndLog();
+                                                }
+                                            }}
+                                        />
+                                        {playingVideo !== message.id && (
+                                            <View style={styles.playButtonOverlay}>
+                                                <Text style={styles.playButtonText}>▶</Text>
+                                            </View>
+                                        )}
+                                    </>
                                 )}
                             </TouchableOpacity>
                         ) : message.message_type === 'call_end' ? (
@@ -2899,6 +3073,23 @@ const styles = StyleSheet.create({
         fontSize: 40,
         color: 'white',
         fontWeight: 'bold',
+    },
+    previewOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        borderRadius: theme.radius.lg,
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 2,
+    },
+    previewText: {
+        fontSize: hp(1.6),
+        color: 'white',
+        fontWeight: theme.fonts.medium,
     },
     messageTime: {
         fontSize: hp(1.2),

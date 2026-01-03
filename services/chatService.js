@@ -1,115 +1,70 @@
 import { supabase } from "../lib/supabase";
+import {
+    CHUNK_SIZE,
+    CHUNK_UPLOAD_THRESHOLD,
+    getChunkMetadata,
+    getFileBlob,
+    uploadSingleChunk,
+    uploadChunksParallel,
+    mergeChunksOnServer
+} from "./chunkService";
 import deviceService from "./deviceService";
 import encryptionService from "./encryptionService";
 
-// ===== CHUNK UPLOAD CONFIG =====
-const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk
-const MAX_PARALLEL_UPLOADS = 3; // Upload 3 chunks cùng lúc
-const CHUNK_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5MB - file >= 5MB sẽ dùng chunk upload
-
-// ===== HELPER FUNCTIONS: CHUNK UPLOAD =====
-
 /**
- * Extract một chunk từ file đã đọc (base64)
- * Lưu ý: Cần decode base64 → binary → slice → encode lại
- * TODO: Tối ưu memory bằng cách chỉ decode phần cần thiết
- * @param {string} fileBase64 - Base64 string của toàn bộ file
- * @param {number} start - Byte bắt đầu (trong file gốc)
- * @param {number} end - Byte kết thúc (trong file gốc)
- * @returns {string} Base64 string của chunk
- */
-const extractChunkFromBase64 = (fileBase64, start, end) => {
-    // Decode base64 thành Uint8Array (binary)
-    // Sử dụng base64-arraybuffer để decode
-    const { decode } = require('base64-arraybuffer');
-    const fileArrayBuffer = decode(fileBase64);
-    const fileUint8Array = new Uint8Array(fileArrayBuffer);
-    
-    // Slice chunk từ Uint8Array
-    const chunkUint8Array = fileUint8Array.slice(start, end);
-    
-    // Encode lại thành base64
-    // Chuyển Uint8Array → binary string → base64
-    let binaryString = '';
-    for (let i = 0; i < chunkUint8Array.length; i++) {
-        binaryString += String.fromCharCode(chunkUint8Array[i]);
-    }
-    const chunkBase64 = btoa(binaryString);
-    
-    return chunkBase64;
-};
-
-/**
- * Chia file thành nhiều chunks
+ * Chia file thành nhiều chunks (Binary Only - KHÔNG base64)
+ * Chỉ tính toán và log metadata, KHÔNG lưu chunk data vào array
  * @param {object} file - File object từ ImagePicker
- * @param {number} chunkSize - Kích thước mỗi chunk (bytes), mặc định 2MB
- * @returns {Promise<Array>} Array các chunks với metadata
+ * @param {number} chunkSize - Kích thước mỗi chunk (bytes), mặc định 5MB
+ * @param {string} fileType - Loại file ('image' hoặc 'video')
+ * @returns {Promise<Array>} Array các chunks metadata (KHÔNG có data)
  */
-const splitFileIntoChunks = async (file, chunkSize = CHUNK_SIZE) => {
-    const FileSystem = require('expo-file-system/legacy');
+const splitFileIntoChunks = async (file, chunkSize = CHUNK_SIZE, fileType = 'image') => {
     const fileSize = file.fileSize || 0;
     const fileUri = file.uri;
-    
-    // Log file size
+
+    // Log file size với type
     const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-    console.log(`📦 [Chunk Upload] File size: ${fileSizeMB} MB (${fileSize} bytes)`);
-    
-    // Tính số chunks
-    const totalChunks = Math.ceil(fileSize / chunkSize);
-    console.log(`📦 [Chunk Upload] Chia thành ${totalChunks} chunks (mỗi chunk ${(chunkSize / (1024 * 1024)).toFixed(2)} MB)`);
-    
-    // Đọc toàn bộ file một lần (tạm thời, sẽ tối ưu sau)
-    // Lưu ý: Vẫn tốn memory, nhưng ít hơn so với decode toàn bộ thành ArrayBuffer
-    console.log(`📖 [Chunk Upload] Đang đọc file...`);
-    const readStartTime = Date.now();
-    const fileBase64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: 'base64',
+    const typeEmoji = fileType === 'video' ? '🎥' : '📷';
+    console.log(`${typeEmoji} [Chunk Upload] ${fileType === 'video' ? 'Video' : 'Image'} file size: ${fileSizeMB} MB (${fileSize} bytes)`);
+
+    // Tính toán chunk metadata (KHÔNG đọc file)
+    const chunksMetadata = getChunkMetadata(fileSize, chunkSize);
+    const totalChunks = chunksMetadata.length;
+    console.log(`${typeEmoji} [Chunk Upload] Chia thành ${totalChunks} chunks (mỗi chunk ${(chunkSize / (1024 * 1024)).toFixed(2)} MB)`);
+
+    // Load file thành Blob để verify (KHÔNG base64)
+    console.log(`${typeEmoji} [Chunk Upload] Đang load ${fileType === 'video' ? 'video' : 'image'} file thành Blob (binary only, KHÔNG base64)...`);
+    const loadStartTime = Date.now();
+    const fileBlob = await getFileBlob(fileUri);
+    const loadTime = Date.now() - loadStartTime;
+    console.log(`${typeEmoji} [Chunk Upload] Load Blob xong (${(loadTime / 1000).toFixed(2)}s), size: ${(fileBlob.size / (1024 * 1024)).toFixed(2)} MB`);
+
+    // Log chi tiết các chunks (chỉ metadata, KHÔNG tạo chunk data)
+    console.log(`${typeEmoji} [Chunk Upload] Chi tiết các chunks cho ${fileType === 'video' ? 'video' : 'image'}:`);
+    chunksMetadata.forEach((chunk) => {
+        const chunkSizeMB = (chunk.size / (1024 * 1024)).toFixed(2);
+        console.log(`  - Chunk ${chunk.index + 1}/${totalChunks}: bytes ${chunk.start}-${chunk.end}, size: ${chunkSizeMB} MB (${chunk.size} bytes)`);
     });
-    const readTime = Date.now() - readStartTime;
-    console.log(`✅ [Chunk Upload] Đọc file xong (${(readTime / 1000).toFixed(2)}s)`);
-    
-    // Tính toán offset trong base64 string
-    // Base64 encoding: 3 bytes → 4 characters
-    // Vậy để lấy chunk từ byte start đến end, cần:
-    // - Base64 start index = Math.floor(start / 3) * 4
-    // - Base64 end index = Math.ceil(end / 3) * 4
-    // Nhưng cách này phức tạp, tạm thời dùng cách decode rồi slice
-    
-    const chunks = [];
-    
-    // Chia file thành chunks
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * chunkSize;
-        const end = Math.min(start + chunkSize, fileSize);
-        const chunkSizeActual = end - start;
-        
-        console.log(`📦 [Chunk Upload] Đang tạo chunk ${i + 1}/${totalChunks} (bytes ${start}-${end}, size: ${(chunkSizeActual / 1024).toFixed(2)} KB)`);
-        
-        // Extract chunk từ base64 string
-        const chunkBase64 = extractChunkFromBase64(fileBase64, start, end);
-        
-        chunks.push({
-            index: i,
-            start: start,
-            end: end,
-            size: chunkSizeActual,
-            data: chunkBase64,
-            base64Length: chunkBase64.length
-        });
-    }
-    
-    console.log(`✅ [Chunk Upload] Đã chia xong ${totalChunks} chunks`);
-    console.log(`📊 [Chunk Upload] Tổng kích thước chunks: ${chunks.reduce((sum, c) => sum + c.size, 0)} bytes`);
-    console.log(`📊 [Chunk Upload] Tổng base64 length: ${chunks.reduce((sum, c) => sum + c.base64Length, 0)} characters`);
-    
-    return chunks;
+
+    // Verify: Slice một chunk để test (KHÔNG lưu vào array)
+    console.log(`${typeEmoji} [Chunk Upload] Test slice chunk đầu tiên để verify (blob.slice)...`);
+    const testChunk = fileBlob.slice(chunksMetadata[0].start, chunksMetadata[0].end);
+    console.log(`${typeEmoji} [Chunk Upload] Test slice thành công, chunk size: ${(testChunk.size / 1024).toFixed(2)} KB`);
+
+    console.log(`${typeEmoji} [Chunk Upload] Đã tính toán xong ${totalChunks} chunks metadata cho ${fileType === 'video' ? 'video' : 'image'}`);
+    console.log(`${typeEmoji} [Chunk Upload] Tổng kích thước: ${fileSize} bytes`);
+    console.log(`${typeEmoji} [Chunk Upload] ✅ KHÔNG dùng base64, chỉ dùng Blob (binary)`);
+
+    // Trả về metadata (KHÔNG có data, theo rule: không lưu chunks vào array)
+    return chunksMetadata;
 };
 
-// Export function để có thể gọi từ bên ngoài
-export { splitFileIntoChunks, CHUNK_SIZE, CHUNK_UPLOAD_THRESHOLD };
+// Export function để có thể gọi từ bên ngoài (tạm thời giữ lại để tương thích)
+export { CHUNK_SIZE, CHUNK_UPLOAD_THRESHOLD, splitFileIntoChunks };
 
 // ===== MEDIA UPLOAD =====
-export const uploadMediaFile = async (file, type = 'image') => {
+export const uploadMediaFile = async (file, type = 'image', onProgress = null, onPreviewReady = null) => {
     const uploadMetrics = {
         startTime: Date.now(),
         fileSize: file.fileSize || 0,
@@ -118,44 +73,134 @@ export const uploadMediaFile = async (file, type = 'image') => {
     };
 
     try {
+        const fileSize = file.fileSize || 0;
+        const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+
+        // Log file size ở đầu tiên
+        console.log(`📦 [Upload] File size: ${fileSizeMB} MB (${fileSize} bytes)`);
+        console.log(`📦 [Upload] File type: ${type}`);
+
+        // Check file size để quyết định upload method
+        if (fileSize >= CHUNK_UPLOAD_THRESHOLD) {
+            // File >= 5MB: Chia chunks và upload từng chunk
+            const typeEmoji = type === 'video' ? '🎥' : '📷';
+            console.log(`${typeEmoji} [Upload] ${type === 'video' ? 'Video' : 'Image'} file >= 5MB, sẽ dùng chunk upload`);
+
+            // Tạo fileId unique cho folder chunks
+            const fileId = `${Date.now()}_${Math.random().toString(36).substring(2)}`;
+            console.log(`${typeEmoji} [Chunk Upload] File ID: ${fileId}`);
+
+            // MIME type
+            const mimeType = file.mimeType || (type === 'image' ? 'image/jpeg' : 'video/mp4');
+
+            // Upload tất cả chunks song song
+            const uploadResult = await uploadChunksParallel({
+                fileUri: file.uri,
+                fileId: fileId,
+                fileSize: fileSize,
+                mimeType: mimeType,
+                fileType: type, // 'image' hoặc 'video'
+                onProgress: onProgress, // Truyền trực tiếp callback, không cần wrap
+                onPreviewReady: onPreviewReady // Callback khi thumbnail preview sẵn sàng
+            });
+
+            if (!uploadResult.success) {
+                console.log(`${typeEmoji} [Chunk Upload] ❌ Upload chunks fail: ${uploadResult.error}`);
+                return {
+                    success: false,
+                    msg: `Chunk upload failed: ${uploadResult.error}`,
+                    metrics: uploadMetrics
+                };
+            }
+
+            // Upload chunks thành công
+            console.log(`${typeEmoji} [Chunk Upload] ✅ Tất cả chunks upload thành công! (${uploadResult.uploadedChunks.length} chunks)`);
+            
+            // Merge chunks trên server
+            const totalChunks = uploadResult.uploadedChunks.length;
+            const fileExt = file.uri.split('.').pop() || (type === 'image' ? 'jpg' : 'mp4');
+            const folderName = type === 'image' ? 'images' : 'videos';
+            const fileName = `${fileId}.${fileExt}`;
+            const finalPath = `${folderName}/${fileName}`;
+            
+            console.log(`${typeEmoji} [Chunk Upload] Đang merge ${totalChunks} chunks trên server...`);
+            const mergeResult = await mergeChunksOnServer({
+                fileId: fileId,
+                totalChunks: totalChunks,
+                finalPath: finalPath,
+                fileType: type,
+                onProgress: (progress) => {
+                    // Update progress (80-100% cho merge)
+                    if (onProgress) {
+                        onProgress(progress);
+                    }
+                }
+            });
+            
+            if (!mergeResult.success) {
+                console.log(`${typeEmoji} [Chunk Upload] ❌ Merge chunks fail: ${mergeResult.error}`);
+                return {
+                    success: false,
+                    msg: `Merge chunks failed: ${mergeResult.error}`,
+                    metrics: uploadMetrics
+                };
+            }
+            
+            // Merge thành công - lấy public URL
+            const publicUrl = mergeResult.publicUrl || mergeResult.fileUrl;
+            console.log(`${typeEmoji} [Chunk Upload] ✅ Merge thành công! Final URL: ${publicUrl}`);
+            
+            // Get public URL từ Supabase Storage
+            const { data: urlData } = supabase.storage
+                .from('media')
+                .getPublicUrl(finalPath);
+            
+            const finalPublicUrl = urlData?.publicUrl || publicUrl;
+            
+            uploadMetrics.endTime = Date.now();
+            uploadMetrics.totalTime = uploadMetrics.endTime - uploadMetrics.startTime;
+            uploadMetrics.steps.uploadComplete = true;
+            uploadMetrics.steps.finalUrl = finalPublicUrl;
+            
+            return {
+                success: true,
+                data: {
+                    file_url: finalPublicUrl,
+                    path: finalPath
+                },
+                metrics: uploadMetrics
+            };
+        }
+
+        // File < 5MB: Dùng Binary upload (KHÔNG base64)
+        console.log(`📦 [Upload] File < 5MB, dùng Binary upload (KHÔNG base64)`);
+
         // Tạo tên file unique
         const fileExt = file.uri.split('.').pop();
         const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
         const folderName = type === 'image' ? 'images' : 'videos';
         const filePath = `${folderName}/${fileName}`;
 
-        // Upload file bằng Supabase client (theo cách imageService.js)
+        // Upload file bằng Supabase client (Binary Only - đọc trực tiếp từ URI thành ArrayBuffer)
 
-        // Đọc file thành base64 (theo cách imageService.js)
-        const FileSystem = require('expo-file-system/legacy');
-        const { decode } = require('base64-arraybuffer');
+        // === METRICS: Đo thời gian đọc file thành ArrayBuffer ===
+        const loadStartTime = Date.now();
+        console.log(`📖 [Upload Progress] 0% - Bắt đầu đọc file thành ArrayBuffer (binary only, KHÔNG base64)...`);
 
-        // === METRICS: Đo thời gian đọc file ===
-        const readStartTime = Date.now();
-        console.log(`📖 [Upload Progress] 0% - Bắt đầu đọc file...`);
-        const fileBase64 = await FileSystem.readAsStringAsync(file.uri, {
-            encoding: 'base64',
-        });
-        uploadMetrics.steps.readFileTime = Date.now() - readStartTime;
-        uploadMetrics.steps.base64Size = fileBase64.length;
-        const readPercent = 25;
-        const readTimeSeconds = (uploadMetrics.steps.readFileTime / 1000).toFixed(2);
-        console.log(`✅ [Upload Progress] ${readPercent}% - Đọc file xong (${readTimeSeconds}s)`);
+        // Đọc file trực tiếp từ URI thành ArrayBuffer (KHÔNG qua base64)
+        const response = await fetch(file.uri);
+        const fileData = await response.arrayBuffer();
 
-        // === METRICS: Đo thời gian decode ===
-        const decodeStartTime = Date.now();
-        console.log(`🔄 [Upload Progress] ${readPercent}% - Bắt đầu decode base64...`);
-        const fileData = decode(fileBase64); // array buffer
-        uploadMetrics.steps.decodeTime = Date.now() - decodeStartTime;
+        uploadMetrics.steps.readFileTime = Date.now() - loadStartTime;
         uploadMetrics.steps.arrayBufferSize = fileData.byteLength;
         uploadMetrics.memoryOverhead = fileData.byteLength - uploadMetrics.fileSize;
-        const decodePercent = 50;
-        const decodeTimeSeconds = (uploadMetrics.steps.decodeTime / 1000).toFixed(2);
-        console.log(`✅ [Upload Progress] ${decodePercent}% - Decode xong (${decodeTimeSeconds}s)`);
+        const readPercent = 50;
+        const readTimeSeconds = (uploadMetrics.steps.readFileTime / 1000).toFixed(2);
+        console.log(`✅ [Upload Progress] ${readPercent}% - Đọc ArrayBuffer xong (${readTimeSeconds}s), size: ${(fileData.byteLength / (1024 * 1024)).toFixed(2)} MB`);
 
         // === METRICS: Đo thời gian upload ===
         const uploadStartTime = Date.now();
-        console.log(`📤 [Upload Progress] ${decodePercent}% - Bắt đầu upload lên server...`);
+        console.log(`📤 [Upload Progress] ${readPercent}% - Bắt đầu upload lên server...`);
         const { data, error } = await supabase.storage
             .from('media')
             .upload(filePath, fileData, {
