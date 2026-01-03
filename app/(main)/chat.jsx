@@ -1605,6 +1605,17 @@ const ChatScreen = () => {
 
     const handleImagePicker = async () => {
         try {
+            // Request permissions trước khi mở gallery
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert(
+                    'Quyền truy cập',
+                    'Ứng dụng cần quyền truy cập ảnh để bạn có thể gửi ảnh. Vui lòng cấp quyền trong Cài đặt.',
+                    [{ text: 'OK' }]
+                );
+                return;
+            }
+
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Images,
                 allowsEditing: true,
@@ -1626,6 +1637,17 @@ const ChatScreen = () => {
 
     const handleVideoPicker = async () => {
         try {
+            // Request permissions trước khi mở gallery
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert(
+                    'Quyền truy cập',
+                    'Ứng dụng cần quyền truy cập video để bạn có thể gửi video. Vui lòng cấp quyền trong Cài đặt.',
+                    [{ text: 'OK' }]
+                );
+                return;
+            }
+
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Videos,
                 allowsEditing: true,
