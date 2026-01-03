@@ -35,6 +35,7 @@ import {
     getMessages,
     markConversationAsRead,
     sendMessage,
+    splitFileIntoChunks,
     uploadMediaFile
 } from '../../services/chatService';
 import pinService from '../../services/pinService';
@@ -1057,31 +1058,50 @@ const ChatScreen = () => {
         // 1. Load tin nhắn NHẬN ĐƯỢC từ DB
         const res = await getMessages(conversationId, user.id, 1000, 0); // Chỉ lấy tin nhắn nhận được
 
-        // 2. Load tin nhắn ĐÃ GỬI từ localStorage
+        // 2. Load tin nhắn ĐÃ GỬI:
+        //    - Text message: từ localStorage (bảo mật)
+        //    - Ảnh/video: từ DB (không cần localStorage)
+
+        // 2a. Load text messages từ localStorage
         const sentMessagesFromLocal = await localMessagePlaintextService.getSentMessagesForConversation(
             conversationId,
             user.id
         );
 
-        // 3. Lấy message IDs từ localStorage để query full data từ DB
-        const sentMessageIds = sentMessagesFromLocal.map(msg => msg.id);
-        let sentMessagesFromDB = [];
-        //truy vấn ngược lên cSDL để xem đầy đủ thông tin tin nhắn
-        if (sentMessageIds.length > 0) {
-            // Query DB để lấy full message data cho tin nhắn đã gửi
-            const { data: dbSentMessages, error: dbError } = await supabase
+        // 2b. Query text messages từ DB (dựa vào localStorage)
+        const sentTextMessageIds = sentMessagesFromLocal
+            .filter(msg => msg.message_type === 'text')
+            .map(msg => msg.id);
+        let sentTextMessagesFromDB = [];
+        if (sentTextMessageIds.length > 0) {
+            const { data: dbTextMessages, error: dbTextError } = await supabase
                 .from('messages')
                 .select(`
                     *,
                     sender:users(id, name, image)
                 `)
                 .eq('conversation_id', conversationId)
-                .in('id', sentMessageIds)
+                .in('id', sentTextMessageIds)
                 .eq('sender_id', user.id);
 
-            if (!dbError && dbSentMessages) {
-                sentMessagesFromDB = dbSentMessages;
+            if (!dbTextError && dbTextMessages) {
+                sentTextMessagesFromDB = dbTextMessages;
             }
+        }
+
+        // 2c. Query ảnh/video đã gửi trực tiếp từ DB (không cần localStorage)
+        const { data: sentMediaMessagesFromDB, error: dbMediaError } = await supabase
+            .from('messages')
+            .select(`
+                *,
+                sender:users(id, name, image)
+            `)
+            .eq('conversation_id', conversationId)
+            .eq('sender_id', user.id)
+            .in('message_type', ['image', 'video']);
+
+        if (dbMediaError) {
+            console.error('[LOAD_MESSAGES] Error loading media messages from DB:', dbMediaError);
         }
 
         setLoading(false);
@@ -1126,8 +1146,12 @@ const ChatScreen = () => {
                 return msg;
             }))).filter(msg => msg !== null); // Filter ra các message không decrypt được
 
-            // 5. Xử lý tin nhắn ĐÃ GỬI: Lấy plaintext từ localStorage và merge với data từ DB
-            const sentMessages = sentMessagesFromDB.map(dbMsg => {
+            // 5. Xử lý tin nhắn ĐÃ GỬI:
+            //    - Text message: Lấy plaintext từ localStorage và merge với data từ DB
+            //    - Ảnh/video: Lấy trực tiếp từ DB (không cần localStorage)
+
+            // 5a. Xử lý text messages (từ localStorage)
+            const sentTextMessages = sentTextMessagesFromDB.map(dbMsg => {
                 // Tìm plaintext từ localStorage
                 const localMsg = sentMessagesFromLocal.find(m => m.id === dbMsg.id);
                 if (localMsg && localMsg.plaintext) {
@@ -1142,6 +1166,15 @@ const ChatScreen = () => {
                 return null;
             }).filter(msg => msg !== null); // Chỉ giữ messages có trong localStorage
 
+            // 5b. Xử lý ảnh/video (từ DB, không cần localStorage)
+            const sentMediaMessages = (sentMediaMessagesFromDB || []).map(dbMsg => {
+                // Ảnh/video không cần decrypt, giữ nguyên từ DB
+                return dbMsg;
+            });
+
+            // 5c. Merge text và media messages
+            const sentMessages = [...sentTextMessages, ...sentMediaMessages];
+
             // 6. Merge received và sent messages
             const allMessages = [...receivedMessages, ...sentMessages];
 
@@ -1154,7 +1187,7 @@ const ChatScreen = () => {
 
             setMessages(mergeMessages(sortedMessages));
 
-            console.log(`[LOAD_MESSAGES] PIN locked: ${receivedMessages.length} received from DB, ${sentMessages.length} sent from localStorage`);
+            console.log(`[LOAD_MESSAGES] PIN locked: ${receivedMessages.length} received from DB, ${sentTextMessages.length} text sent from localStorage, ${sentMediaMessages.length} media sent from DB`);
 
             // === METRICS: Track network data ===
             const estimatedSize = res.data.length * 500;
@@ -1582,12 +1615,6 @@ const ChatScreen = () => {
             if (!result.canceled && result.assets[0]) {
                 const image = result.assets[0];
 
-                // Kiểm tra kích thước file (10MB cho ảnh)
-                if (image.fileSize && image.fileSize > 10 * 1024 * 1024) {
-                    Alert.alert('Lỗi', 'Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 10MB');
-                    return;
-                }
-
                 console.log('Selected image:', image);
                 await sendMediaMessage(image, 'image');
             }
@@ -1602,18 +1629,11 @@ const ChatScreen = () => {
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Videos,
                 allowsEditing: true,
-                quality: 0.05, // Giảm quality cực thấp để nén mạnh nhất
-                videoMaxDuration: 30, // Giới hạn 30 giây
+                quality: 0.7,
             });
 
             if (!result.canceled && result.assets[0]) {
                 const video = result.assets[0];
-
-                // Kiểm tra kích thước file (30MB)
-                if (video.fileSize && video.fileSize > 30 * 1024 * 1024) {
-                    Alert.alert('Lỗi', 'Video quá lớn. Vui lòng chọn video nhỏ hơn 30MB');
-                    return;
-                }
 
                 console.log('Selected video:', {
                     uri: video.uri,
@@ -1627,7 +1647,8 @@ const ChatScreen = () => {
             }
         } catch (error) {
             console.error('Error picking video:', error);
-            Alert.alert('Lỗi', 'Không thể chọn video');
+            console.error('Error details:', JSON.stringify(error, null, 2));
+            Alert.alert('Lỗi', `Không thể chọn video: ${error.message || 'Unknown error'}`);
         }
     };
 
@@ -1636,13 +1657,24 @@ const ChatScreen = () => {
 
         setUploading(true);
         performanceMetrics.trackRender('ChatScreen-UploadStart');
-        console.log('Sending', type, 'message...');
+        const uploadStartTime = Date.now();
+        console.log(`🚀 [Upload] Bắt đầu upload ${type}...`);
+        console.log(`📦 [Upload] File size: ${file.fileSize ? (file.fileSize / (1024 * 1024)).toFixed(2) + 'MB' : 'Unknown'}`);
 
         try {
-            // Tạo timeout cho upload (60 giây)
+            // TEST: Chia file thành chunks để log (ngay cả khi file nhỏ)
+            console.log(`🧪 [Test Chunk] Bắt đầu test chia chunks...`);
+            try {
+                const chunks = await splitFileIntoChunks(file);
+                console.log(`🧪 [Test Chunk] Test chia chunks hoàn tất: ${chunks.length} chunks`);
+            } catch (chunkError) {
+                console.error(`🧪 [Test Chunk] Lỗi khi test chia chunks:`, chunkError);
+            }
+
+            // Tạo timeout cho upload (không giới hạn thời gian, nhưng giữ timeout để tránh treo)
             const uploadPromise = uploadMediaFile(file, type);
             const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Upload timeout')), 60000)
+                setTimeout(() => reject(new Error('Upload timeout')), 300000) // 5 phút
             );
 
             const uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
@@ -1669,7 +1701,10 @@ const ChatScreen = () => {
             });
 
             if (messageResult.success) {
-                console.log('Media message sent successfully');
+                const totalUploadTime = Date.now() - uploadStartTime;
+                const totalSeconds = (totalUploadTime / 1000).toFixed(2);
+                console.log('✅ [Upload] Media message sent successfully');
+                console.log(`⏱️ [Upload] Tổng thời gian upload: ${totalSeconds}s (${totalUploadTime}ms)`);
                 performanceMetrics.trackRender('ChatScreen-UploadSuccess');
 
                 // Thêm tin nhắn vào danh sách ngay lập tức
@@ -1694,9 +1729,12 @@ const ChatScreen = () => {
                 Alert.alert('Lỗi', messageResult.msg || 'Không thể gửi tin nhắn');
             }
         } catch (error) {
-            console.error('Error sending media message:', error);
+            const totalTime = Date.now() - uploadStartTime;
+            const totalTimeSeconds = (totalTime / 1000).toFixed(2);
+            console.error('❌ [Upload] Error sending media message:', error);
+            console.log(`⏱️ [Upload] Tổng thời gian (lỗi): ${totalTimeSeconds}s (${totalTime}ms)`);
             if (error.message === 'Upload timeout') {
-                Alert.alert('Lỗi', 'Upload quá lâu. Vui lòng thử lại với video nhỏ hơn');
+                Alert.alert('Lỗi', 'Upload quá lâu. Vui lòng thử lại');
             } else {
                 Alert.alert('Lỗi', 'Không thể gửi tin nhắn: ' + error.message);
             }

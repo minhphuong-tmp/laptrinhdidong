@@ -32,7 +32,10 @@
         "android.permission.INTERNET",
         "android.permission.VIBRATE",
         "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_IMAGES"
       ],
       "package": "com.phuongtmp.laptrinhdidong"
     },
@@ -46,6 +49,13 @@
       "expo-dev-client",
       "expo-secure-store",
       "expo-document-picker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you share them.",
+          "cameraPermission": "The app accesses your camera to let you take photos and videos."
+        }
+      ],
       [
         "expo-splash-screen",
         {
