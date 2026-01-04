@@ -14,7 +14,9 @@ import Close from './Close';
 import Comment from './Comment';
 import Delete from './Delete';
 import DollarSign from './DollarSign';
+import Download from './Download';
 import Edit from './Edit';
+import Eye from './Eye';
 import FileText from './FileText';
 import Fingerprint from './Fingerprint';
 import Heart from './Heart';
@@ -64,6 +66,7 @@ const icons = {
   call: Call,
   camera: Camera,
   edit: Edit,
+  eye: Eye,
   arrowLeft: ArrowLeft,
   threeDotsCircle: ThreeDotsCircle,
   threeDotsHorizontal: ThreeDotsHorizontal,
@@ -84,6 +87,7 @@ const icons = {
   award: Award,
   'dollar-sign': DollarSign,
   phone: Phone,
+  download: Download,
   // Notification badge
   'notification-badge': NotificationBadge,
   // Additional icons

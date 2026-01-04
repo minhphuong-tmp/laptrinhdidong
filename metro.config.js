@@ -34,6 +34,8 @@ config.transformer = {
             keep_fnames: false,
         },
     },
+    // Allow require context for native modules that might not be available during prebuild
+    unstable_allowRequireContext: true,
 };
 
 config.resolver = {

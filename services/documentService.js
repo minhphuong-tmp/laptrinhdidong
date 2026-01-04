@@ -1,5 +1,5 @@
 import { decode } from 'base64-arraybuffer';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
 import { supabase } from '../lib/supabase';
 import { loadDocumentsCache } from '../utils/cacheHelper';
 
@@ -324,6 +324,51 @@ export const documentService = {
         } catch (error) {
             console.log('Error in rateDocument:', error);
             return { success: false, msg: error.message };
+        }
+    },
+
+    // Download file tài liệu về local storage
+    downloadDocumentFile: async (fileUrl, fileName, onProgress = null) => {
+        try {
+            // Tạo đường dẫn lưu file trong documentDirectory
+            const documentsDir = FileSystem.documentDirectory;
+            if (!documentsDir) {
+                return { success: false, msg: 'Không thể truy cập thư mục lưu trữ' };
+            }
+
+            // Tạo tên file với timestamp để tránh trùng lặp
+            const timestamp = Date.now();
+            const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const localFileName = `${timestamp}_${sanitizedFileName}`;
+            const localFilePath = `${documentsDir}${localFileName}`;
+
+            console.log('Downloading file from:', fileUrl);
+            console.log('Saving to:', localFilePath);
+
+            // Download file với progress callback
+            const downloadResult = await FileSystem.downloadAsync(
+                fileUrl,
+                localFilePath,
+                {
+                    // Có thể thêm headers nếu cần
+                }
+            );
+
+            if (!downloadResult || !downloadResult.uri) {
+                return { success: false, msg: 'Download thất bại: Không nhận được file' };
+            }
+
+            console.log('Download completed:', downloadResult.uri);
+
+            return {
+                success: true,
+                localUri: downloadResult.uri,
+                fileName: localFileName,
+                originalFileName: fileName
+            };
+        } catch (error) {
+            console.error('Error downloading document file:', error);
+            return { success: false, msg: `Lỗi khi tải file: ${error.message}` };
         }
     }
 };

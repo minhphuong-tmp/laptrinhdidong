@@ -27,3 +27,5 @@ Click nút **Deploy** hoặc **Save** để lưu và deploy function.
 - Không cần config thêm gì
 
 
+
+

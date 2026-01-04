@@ -11,6 +11,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import * as Sharing from 'expo-sharing';
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { supabaseUrl } from '../../constants';
@@ -90,17 +91,18 @@ const Documents = () => {
         applyFilters(searchText, category);
     };
 
-    const handleDownload = async (document) => {
+    const handlePreview = async (document) => {
         try {
-            console.log('=== DOWNLOAD DEBUG ===');
+            console.log('=== PREVIEW DEBUG ===');
             console.log('Document:', document);
             console.log('Document filePath:', document.filePath);
 
-            // Tạo URL download từ Supabase Storage
-            const fileUrl = `${supabaseUrl}/storage/v1/object/public/documents/documents/${document.filePath.replace('documents/', '')}`;
-            console.log('Download URL:', fileUrl);
+            // Tạo URL preview từ Supabase Storage
+            // Bucket là 'upload', path là documents/uploader_id/file_name
+            const fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${document.filePath}`;
+            console.log('Preview URL:', fileUrl);
 
-            // Mở URL trong browser để user tự download
+            // Mở URL trong browser để preview
             const canOpen = await Linking.canOpenURL(fileUrl);
             console.log('Can open URL:', canOpen);
 
@@ -108,7 +110,7 @@ const Documents = () => {
                 await Linking.openURL(fileUrl);
                 Alert.alert(
                     'Đang mở tài liệu',
-                    'Tài liệu đang được mở trong trình duyệt. Bạn có thể tải về từ đó.',
+                    'Tài liệu đang được mở trong trình duyệt.',
                     [{ text: 'OK', style: 'default' }]
                 );
             } else {
@@ -116,8 +118,67 @@ const Documents = () => {
             }
 
         } catch (error) {
-            console.error('Download error:', error);
+            console.error('Preview error:', error);
             Alert.alert('Lỗi', `Không thể mở tài liệu: ${error.message}`);
+        }
+    };
+
+    const handleDownload = async (document) => {
+        try {
+            console.log('=== DOWNLOAD DEBUG ===');
+            console.log('Document:', document);
+            console.log('Document filePath:', document.filePath);
+
+            // Tạo URL download từ Supabase Storage
+            // Bucket là 'upload', path là documents/uploader_id/file_name
+            const fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${document.filePath}`;
+            console.log('Download URL:', fileUrl);
+
+            // Lấy tên file từ filePath hoặc title
+            const fileName = document.filePath.split('/').pop() || `${document.title}.${document.type}`;
+
+            // Download file về local storage
+            const downloadResult = await documentService.downloadDocumentFile(fileUrl, fileName);
+
+            if (!downloadResult.success) {
+                Alert.alert('Lỗi', downloadResult.msg || 'Không thể tải tài liệu');
+                return;
+            }
+
+            // Tăng lượt download sau khi download thành công
+            await documentService.incrementDownload(document.id);
+
+            // Hiển thị alert với option mở/share file
+            Alert.alert(
+                'Tải thành công',
+                `Tài liệu "${document.title}" đã được tải về máy.`,
+                [
+                    {
+                        text: 'Mở file',
+                        onPress: async () => {
+                            try {
+                                const isAvailable = await Sharing.isAvailableAsync();
+                                if (isAvailable) {
+                                    await Sharing.shareAsync(downloadResult.localUri);
+                                } else {
+                                    Alert.alert('Thông báo', 'Chức năng chia sẻ không khả dụng trên thiết bị này.');
+                                }
+                            } catch (error) {
+                                console.error('Error sharing file:', error);
+                                Alert.alert('Lỗi', 'Không thể mở file');
+                            }
+                        }
+                    },
+                    {
+                        text: 'OK',
+                        style: 'cancel'
+                    }
+                ]
+            );
+
+        } catch (error) {
+            console.error('Download error:', error);
+            Alert.alert('Lỗi', `Không thể tải tài liệu: ${error.message}`);
         }
     };
 
@@ -194,6 +255,12 @@ const Documents = () => {
                         onPress={() => handleDownload(item)}
                     >
                         <Icon name="download" size={hp(1.8)} color={theme.colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.downloadButton}
+                        onPress={() => handlePreview(item)}
+                    >
+                        <Icon name="eye" size={hp(1.8)} color={theme.colors.primary} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -483,6 +550,7 @@ const styles = StyleSheet.create({
     documentActions: {
         flexDirection: 'row',
         alignItems: 'center',
+        gap: wp(2),
     },
     downloadButton: {
         padding: wp(2),

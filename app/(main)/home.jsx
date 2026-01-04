@@ -894,6 +894,17 @@ const Home = () => {
                                         style={styles.menuItem}
                                         onPress={() => {
                                             setShowMenu(false);
+                                            router.push('documents');
+                                        }}
+                                    >
+                                        <Icon name="file-text" size={hp(2.5)} color={theme.colors.text} />
+                                        <Text style={styles.menuItemText}>Tài liệu CLB</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.menuItem}
+                                        onPress={() => {
+                                            setShowMenu(false);
                                             router.push('test');
                                         }}
                                     >

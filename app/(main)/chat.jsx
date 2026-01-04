@@ -357,6 +357,7 @@ const ChatScreen = () => {
     const initialMessageCount = useRef(null);
     const loadedImageIds = useRef(new Set());
     const loadedVideoIds = useRef(new Set());
+    const videoErrors = useRef(new Set()); // Track video errors để hiển thị fallback
     const imagesToLoad = useRef(new Set());
     const videosToLoad = useRef(new Set());
     const imageLoadTimes = useRef([]); // Lưu thời gian load từng ảnh
@@ -431,14 +432,23 @@ const ChatScreen = () => {
                             const existingMessage = prev[existingIndex];
                             newMessages = [...prev];
 
-                            // CRITICAL: Preserve runtime_plain_text từ existing message nếu có
+                            // CRITICAL: Preserve runtime_plain_text và file_url từ existing message nếu có
+                            const preservedData = {};
                             if (existingMessage.runtime_plain_text && !messageWithSender.runtime_plain_text) {
+                                preservedData.runtime_plain_text = existingMessage.runtime_plain_text;
+                                preservedData.is_encrypted = false;
+                            }
+                            // Preserve file_url nếu existing message có file_url và new message không có hoặc null
+                            if (existingMessage.file_url && (!messageWithSender.file_url || messageWithSender.file_url === null)) {
+                                preservedData.file_url = existingMessage.file_url;
+                            }
+                            
+                            if (Object.keys(preservedData).length > 0) {
                                 newMessages[existingIndex] = {
                                     ...messageWithSender,
-                                    runtime_plain_text: existingMessage.runtime_plain_text,
-                                    is_encrypted: false
+                                    ...preservedData
                                 };
-                                console.log(`[REALTIME_MERGE] Preserved runtime_plain_text for message ${messageWithSender.id} from existing message`);
+                                console.log(`[REALTIME_MERGE] Preserved data for message ${messageWithSender.id}:`, Object.keys(preservedData));
                             } else {
                                 newMessages[existingIndex] = messageWithSender;
                             }
@@ -590,14 +600,23 @@ const ChatScreen = () => {
                         const existingMessage = prev[existingIndex];
                         const tempMessages = [...prev];
 
-                        // CRITICAL: Preserve runtime_plain_text từ existing message nếu có
+                        // CRITICAL: Preserve runtime_plain_text và file_url từ existing message nếu có
+                        const preservedData = {};
                         if (existingMessage.runtime_plain_text && !messageWithSender.runtime_plain_text) {
+                            preservedData.runtime_plain_text = existingMessage.runtime_plain_text;
+                            preservedData.is_encrypted = false;
+                        }
+                        // Preserve file_url nếu existing message có file_url và new message không có hoặc null
+                        if (existingMessage.file_url && (!messageWithSender.file_url || messageWithSender.file_url === null)) {
+                            preservedData.file_url = existingMessage.file_url;
+                        }
+                        
+                        if (Object.keys(preservedData).length > 0) {
                             tempMessages[existingIndex] = {
                                 ...messageWithSender,
-                                runtime_plain_text: existingMessage.runtime_plain_text,
-                                is_encrypted: false
+                                ...preservedData
                             };
-                            console.log(`[REALTIME_MERGE] Preserved runtime_plain_text for message ${messageWithSender.id} from existing message`);
+                            console.log(`[REALTIME_MERGE] Preserved data for message ${messageWithSender.id}:`, Object.keys(preservedData));
                         } else {
                             tempMessages[existingIndex] = messageWithSender;
                         }
@@ -677,21 +696,25 @@ const ChatScreen = () => {
                     const existingMessage = prev[existingIndex];
                     const tempMessages = [...prev];
 
-                    // CRITICAL: Preserve runtime_plain_text từ existing message nếu có
+                    // CRITICAL: Preserve runtime_plain_text và file_url từ existing message nếu có
                     // runtime_plain_text là runtime-only data, không được overwrite từ server/realtime
+                    const preservedData = {};
                     if (existingMessage.runtime_plain_text && !decryptedReceivedMessage.runtime_plain_text) {
-                        // Existing message đã có runtime_plain_text → preserve nó
+                        preservedData.runtime_plain_text = existingMessage.runtime_plain_text;
+                        preservedData.is_encrypted = false; // Đã decrypt
+                    }
+                    // Preserve file_url nếu existing message có file_url và new message không có hoặc null
+                    if (existingMessage.file_url && (!decryptedReceivedMessage.file_url || decryptedReceivedMessage.file_url === null)) {
+                        preservedData.file_url = existingMessage.file_url;
+                    }
+                    
+                    if (Object.keys(preservedData).length > 0) {
                         tempMessages[existingIndex] = {
                             ...decryptedReceivedMessage,
-                            runtime_plain_text: existingMessage.runtime_plain_text,
-                            is_encrypted: false // Đã decrypt
+                            ...preservedData
                         };
-                        console.log(`[REALTIME_MERGE] Preserved runtime_plain_text for message ${decryptedReceivedMessage.id} from existing message`);
-                    } else if (decryptedReceivedMessage.runtime_plain_text) {
-                        // New message có runtime_plain_text → dùng nó
-                        tempMessages[existingIndex] = decryptedReceivedMessage;
+                        console.log(`[REALTIME_MERGE] Preserved data for message ${decryptedReceivedMessage.id}:`, Object.keys(preservedData));
                     } else {
-                        // Không có runtime_plain_text ở cả hai → dùng new message
                         tempMessages[existingIndex] = decryptedReceivedMessage;
                     }
                     newMessages = mergeMessages(tempMessages);
@@ -738,6 +761,7 @@ const ChatScreen = () => {
             setIsNearBottom(true); // Reset về true khi vào chat mới
             loadedImageIds.current = new Set(); // Reset khi vào chat mới
             loadedVideoIds.current = new Set();
+            videoErrors.current = new Set(); // Reset video errors khi vào chat mới
             imagesToLoad.current = new Set();
             videosToLoad.current = new Set();
             imageLoadTimes.current = [];
@@ -1694,11 +1718,19 @@ const ChatScreen = () => {
             // Trên Android/MIUI, MediaTypeOptions.Videos có thể không hiển thị video
             // Dùng MediaTypeOptions.All ngay từ đầu, sau đó filter video
             console.log('🎥 [Video Picker] Using MediaTypeOptions.All to show all media...');
-            const result = await ImagePicker.launchImageLibraryAsync({
+            // Tạo options cho ImagePicker
+            const pickerOptions = {
                 mediaTypes: ImagePicker.MediaTypeOptions.All, // Hiển thị cả ảnh và video
                 allowsEditing: false, // Bỏ editing cho video trên Android
-                quality: 0.7,
-            });
+                quality: 0.7, // Quality cho image (không áp dụng cho video)
+            };
+            
+            // Thêm videoQuality nếu có (một số phiên bản không hỗ trợ)
+            if (ImagePicker.VideoQuality && ImagePicker.VideoQuality.Medium) {
+                pickerOptions.videoQuality = ImagePicker.VideoQuality.Medium;
+            }
+            
+            const result = await ImagePicker.launchImageLibraryAsync(pickerOptions);
 
             console.log('🎥 [Video Picker] Result:', {
                 canceled: result.canceled,
@@ -1746,7 +1778,19 @@ const ChatScreen = () => {
                         height: selectedVideo.height,
                         type: selectedVideo.type
                     });
-                    await sendMediaMessage(selectedVideo, 'video');
+                    
+                    // Compress video trước khi upload (nếu cần)
+                    const { compressVideo } = require('../../services/videoCompressService');
+                    const compressResult = await compressVideo(selectedVideo);
+                    
+                    if (compressResult.success) {
+                        // Sử dụng video đã được xử lý (có thể là video gốc nếu không cần compress)
+                        await sendMediaMessage(compressResult.file || selectedVideo, 'video');
+                    } else {
+                        // Nếu compress fail, vẫn upload video gốc
+                        console.log('🎥 [Video Picker] ⚠️ Compress video fail, dùng video gốc');
+                        await sendMediaMessage(selectedVideo, 'video');
+                    }
                     return; // Thoát sớm nếu đã chọn video
                 } else {
                     console.log('🎥 [Video Picker] No videos found in assets. Showing alert...');
@@ -1863,8 +1907,11 @@ const ChatScreen = () => {
                 performanceMetrics.trackRender('ChatScreen-UploadSuccess');
 
                 // Thêm tin nhắn vào danh sách ngay lập tức
+                // Đảm bảo file_url được set đúng từ uploadResult
                 const newMessage = {
                     ...messageResult.data,
+                    // CRITICAL: Đảm bảo file_url được set đúng (có thể database chưa update kịp)
+                    file_url: messageResult.data.file_url || uploadResult.data.file_url,
                     sender: {
                         id: user.id,
                         name: user.name,
@@ -2281,37 +2328,80 @@ const ChatScreen = () => {
                                 ) : (
                                     // Hiển thị video bình thường
                                     <>
-                                        <Video
-                                            ref={(ref) => {
-                                                if (ref) {
-                                                    videoRefs.current[message.id] = ref;
-                                                }
-                                            }}
-                                            source={{ uri: message.file_url }}
-                                            style={styles.messageVideo}
-                                            useNativeControls={true}
-                                            resizeMode="cover"
-                                            shouldPlay={playingVideo === message.id}
-                                            onPlaybackStatusUpdate={(status) => {
-                                            }}
-                                            isLooping={false}
-                                            onError={(error) => {
-                                            }}
-                                            onLoadStart={() => {
-                                                videoLoadStart = Date.now();
-                                            }}
-                                            onLoad={() => {
-                                                const loaded = Date.now();
-                                                if (!loadedVideoIds.current.has(message.id) && videoLoadStart) {
-                                                    const loadTime = loaded - videoLoadStart;
-                                                    loadedVideoIds.current.add(message.id);
-                                                    // Lưu thời gian load thay vì log ngay
-                                                    videoLoadTimes.current.push({ id: message.id, time: loadTime });
-                                                    checkAllMediaLoadedAndLog();
-                                                }
-                                            }}
-                                        />
-                                        {playingVideo !== message.id && (
+                                        {message.file_url ? (
+                                            // Kiểm tra xem video có bị lỗi không
+                                            videoErrors.current.has(message.id) ? (
+                                                // Fallback: Hiển thị thumbnail hoặc placeholder nếu video bị lỗi
+                                                <>
+                                                    {message.thumbnail_url ? (
+                                                        <Image
+                                                            source={{ uri: message.thumbnail_url }}
+                                                            style={styles.messageVideo}
+                                                            resizeMode="cover"
+                                                        />
+                                                    ) : (
+                                                        <View style={[styles.messageVideo, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
+                                                            <Text style={{ color: '#fff', fontSize: 12 }}>Video không thể phát</Text>
+                                                            <Text style={{ color: '#888', fontSize: 10, marginTop: 4 }}>Format không hỗ trợ</Text>
+                                                        </View>
+                                                    )}
+                                                    <View style={styles.playButtonOverlay}>
+                                                        <Text style={styles.playButtonText}>⚠</Text>
+                                                    </View>
+                                                </>
+                                            ) : (
+                                                <Video
+                                                    key={`video-${message.id}-${message.file_url}`}
+                                                    ref={(ref) => {
+                                                        if (ref) {
+                                                            videoRefs.current[message.id] = ref;
+                                                        }
+                                                    }}
+                                                    source={{ uri: message.file_url }}
+                                                    style={styles.messageVideo}
+                                                    useNativeControls={true}
+                                                    resizeMode="cover"
+                                                    shouldPlay={playingVideo === message.id}
+                                                    onPlaybackStatusUpdate={(status) => {
+                                                        // Track error trong playback status
+                                                        if (status.error) {
+                                                            videoErrors.current.add(message.id);
+                                                        }
+                                                    }}
+                                                    isLooping={false}
+                                                    onError={(error) => {
+                                                        console.log(`[Video] Error loading video ${message.id}:`, error);
+                                                        // Mark video as error để hiển thị fallback
+                                                        videoErrors.current.add(message.id);
+                                                        // Force re-render bằng cách update state
+                                                        setMessages(prev => [...prev]);
+                                                    }}
+                                                    onLoadStart={() => {
+                                                        videoLoadStart = Date.now();
+                                                        // Remove from error set khi bắt đầu load lại
+                                                        videoErrors.current.delete(message.id);
+                                                    }}
+                                                    onLoad={() => {
+                                                        const loaded = Date.now();
+                                                        if (!loadedVideoIds.current.has(message.id) && videoLoadStart) {
+                                                            const loadTime = loaded - videoLoadStart;
+                                                            loadedVideoIds.current.add(message.id);
+                                                            // Lưu thời gian load thay vì log ngay
+                                                            videoLoadTimes.current.push({ id: message.id, time: loadTime });
+                                                            checkAllMediaLoadedAndLog();
+                                                        }
+                                                        // Remove from error set khi load thành công
+                                                        videoErrors.current.delete(message.id);
+                                                    }}
+                                                />
+                                            )
+                                        ) : (
+                                            // Fallback: Hiển thị placeholder nếu file_url chưa sẵn sàng
+                                            <View style={[styles.messageVideo, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
+                                                <Text style={{ color: '#fff' }}>Đang tải video...</Text>
+                                            </View>
+                                        )}
+                                        {playingVideo !== message.id && message.file_url && !videoErrors.current.has(message.id) && (
                                             <View style={styles.playButtonOverlay}>
                                                 <Text style={styles.playButtonText}>▶</Text>
                                             </View>
