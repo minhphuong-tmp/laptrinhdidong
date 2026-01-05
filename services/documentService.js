@@ -1,8 +1,17 @@
 import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
+import RNBlobUtil from 'react-native-blob-util';
 import { supabase } from '../lib/supabase';
 import { loadDocumentsCache } from '../utils/cacheHelper';
+import { 
+    getFileBlob, 
+    uploadChunksParallel, 
+    mergeDocumentChunksOnServer,
+    getPresignedUrlsForChunks,
+    getPresignedUrlForSingleFile,
+    CHUNK_UPLOAD_THRESHOLD 
+} from './chunkService';
 
 export const documentService = {
     // Lấy tất cả tài liệu
@@ -27,24 +36,34 @@ export const documentService = {
 
             if (error) {
                 console.log('Error fetching documents:', error);
-                return { success: false, msg: error.message, data: [] };
+                console.log('Error details:', JSON.stringify(error, null, 2));
+                return { success: false, msg: error.message || `error code: ${error.code || 'unknown'}`, data: [] };
             }
 
             // Transform data để match với UI
-            const transformedData = data.map(doc => ({
-                id: doc.id,
-                title: doc.title,
-                type: doc.file_type || 'pdf',
-                size: doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
-                uploadDate: new Date(doc.upload_date).toLocaleDateString('vi-VN'),
-                uploader: doc.uploader?.name || 'N/A',
-                downloads: doc.download_count || 0,
-                category: doc.category || 'Lý thuyết',
-                description: doc.description || '',
-                filePath: doc.file_path,
-                rating: doc.rating || 0,
-                tags: doc.tags || []
-            }));
+            const transformedData = (data || []).map(doc => {
+                try {
+                    // Xử lý upload_date: có thể là upload_date hoặc created_at
+                    const uploadDate = doc.upload_date || doc.created_at;
+                    return {
+                        id: doc.id,
+                        title: doc.title,
+                        type: doc.file_type || 'pdf',
+                        size: doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
+                        uploadDate: uploadDate ? new Date(uploadDate).toLocaleDateString('vi-VN') : 'N/A',
+                        uploader: doc.uploader?.name || 'N/A',
+                        downloads: doc.download_count || 0,
+                        category: doc.category || 'Lý thuyết',
+                        description: doc.description || '',
+                        filePath: doc.file_path,
+                        rating: doc.rating || 0,
+                        tags: doc.tags || []
+                    };
+                } catch (transformError) {
+                    console.log('Error transforming document:', doc.id, transformError);
+                    return null;
+                }
+            }).filter(doc => doc !== null); // Loại bỏ các document transform fail
 
             // Removed: Không tự động cache ở đây, chỉ cache khi prefetch
             // Cache chỉ được tạo trong prefetchService.js
@@ -96,43 +115,203 @@ export const documentService = {
         }
     },
 
-    // Upload file tài liệu lên Supabase Storage
-    uploadDocumentFile: async (fileUri, uploaderId, fileName) => {
+    // Upload file tài liệu lên Supabase Storage (với chunk upload cho file lớn)
+    uploadDocumentFile: async (fileUri, uploaderId, fileName, fileSize = 0, onProgress = null, onMergeComplete = null) => {
         try {
-            // Đọc file thành base64
-            const fileBase64 = await FileSystem.readAsStringAsync(fileUri, {
-                encoding: 'base64',
-            });
+            // Documents dùng bucket "media" (cùng bucket với images/videos, phân biệt bằng folder path)
+            const bucketName = 'media';
+            const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+            
+            console.log('📄 [Document Upload] Bắt đầu upload tài liệu:', fileName);
+            console.log(`📄 [Document Upload] File size: ${fileSizeMB} MB (${fileSize} bytes)`);
+            console.log(`📄 [Document Upload] Using bucket: ${bucketName}`);
 
-            // Decode base64 thành array buffer
-            const fileData = decode(fileBase64);
+            // Validate onProgress callback
+            const progressCallback = typeof onProgress === 'function' ? onProgress : null;
 
-            // Tạo đường dẫn: documents/<uploader_id>/<file_name>
-            const filePath = `documents/${uploaderId}/${fileName}`;
+            // Check file size để quyết định upload method
+            if (fileSize >= CHUNK_UPLOAD_THRESHOLD) {
+                // File >= 5MB: Chia chunks và upload song song
+                console.log('📄 [Document Upload] File >= 5MB, sẽ dùng chunk upload');
 
-            // Upload lên bucket 'upload' (bucket mặc định)
-            const bucketName = 'upload';
+                // Tạo fileId unique cho folder chunks
+                const fileId = `${Date.now()}_${Math.random().toString(36).substring(2)}`;
+                console.log(`📄 [Document Upload] File ID: ${fileId}`);
 
-            console.log('Uploading document to bucket:', bucketName, 'with path:', filePath);
-
-            const { data, error } = await supabase
-                .storage
-                .from(bucketName)
-                .upload(filePath, fileData, {
-                    cacheControl: '3600',
-                    upsert: false,
-                    contentType: 'application/octet-stream'
+                // Upload chunks song song với presigned URLs (tự động lấy presigned URLs trong uploadChunksParallel)
+                const uploadResult = await uploadChunksParallel({
+                    fileUri: fileUri,
+                    fileId: fileId,
+                    fileSize: fileSize,
+                    mimeType: 'application/octet-stream',
+                    fileType: 'document', // Để phân biệt với image/video
+                    bucketName: bucketName, // Documents dùng bucket "media" (cùng với images/videos)
+                    onProgress: (progress) => {
+                        // Update progress (0-80% cho upload chunks)
+                        if (progressCallback) {
+                            try {
+                                progressCallback(progress);
+                            } catch (progressError) {
+                                console.log('📄 [Document Upload] ⚠️ Progress callback error:', progressError.message);
+                            }
+                        }
+                    }
                 });
 
-            if (error) {
-                console.log('Document upload error:', error);
-                return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
-            }
+                if (!uploadResult.success) {
+                    console.log(`📄 [Document Upload] ❌ Upload chunks fail: ${uploadResult.error}`);
+                    return { 
+                        success: false, 
+                        msg: 'Không thể tải lên tài liệu: ' + uploadResult.error 
+                    };
+                }
 
-            console.log('Document upload success:', data);
-            return { success: true, data: data.path };
+                // Upload chunks thành công - return ngay (không đợi merge)
+                console.log(`📄 [Document Upload] ✅ Tất cả chunks upload thành công! (${uploadResult.uploadedChunks.length} chunks)`);
+                
+                // Tạo đường dẫn cuối cùng
+                const finalPath = `documents/${uploaderId}/${fileName}`;
+                
+                // Gọi merge ở background (KHÔNG await - fire and forget hoàn toàn)
+                const totalChunks = uploadResult.uploadedChunks.length;
+                console.log(`📄 [Document Upload] Sẽ merge ${totalChunks} chunks ở background (không block UI)...`);
+                
+                // Merge ở background (fire and forget - KHÔNG có progress callback để không block UI)
+                mergeDocumentChunksOnServer({
+                    fileId: fileId,
+                    totalChunks: totalChunks,
+                    finalPath: finalPath,
+                    bucketName: bucketName,
+                    onProgress: null // Không gọi progress callback để không block UI
+                }).then((mergeResult) => {
+                    if (mergeResult.success) {
+                        console.log(`📄 [Document Upload] ✅ Merge thành công ở background: ${mergeResult.fileUrl}`);
+                        // Gọi callback nếu có (để update document record)
+                        if (onMergeComplete && typeof onMergeComplete === 'function') {
+                            try {
+                                onMergeComplete(mergeResult.fileUrl, finalPath);
+                            } catch (callbackError) {
+                                console.log('📄 [Document Upload] ⚠️ onMergeComplete callback error:', callbackError.message);
+                            }
+                        }
+                    } else {
+                        console.log(`📄 [Document Upload] ❌ Merge fail ở background: ${mergeResult.error}`);
+                    }
+                }).catch((error) => {
+                    console.log('📄 [Document Upload] ❌ Merge error ở background:', error.message);
+                });
+
+                // Return ngay với file_path tạm thời (chunks path) hoặc final path
+                // Người dùng có thể tiếp tục dùng app
+                return { 
+                    success: true, 
+                    data: finalPath, // Trả về final path (sẽ có sau khi merge xong)
+                    isChunked: true,
+                    fileId: fileId,
+                    totalChunks: totalChunks
+                };
+            } else {
+                // File < 5MB: Upload với presigned URL dùng react-native-blob-util
+                // ✅ GIẢI PHÁP: react-native-blob-util không dùng Transfer-Encoding: chunked
+                // Gửi Content-Length thật → S3 proxy CHẤP NHẬN
+                console.log('📄 [Document Upload] File < 5MB, upload với presigned URL (RNBlobUtil)');
+
+                // Tạo đường dẫn: documents/<uploader_id>/<file_name>
+                const filePath = `documents/${uploaderId}/${fileName}`;
+                const fileId = `single_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+
+                console.log('📄 [Document Upload] Uploading to bucket:', bucketName, 'with path:', filePath);
+
+                // Update progress 30% (đang lấy presigned URL)
+                if (progressCallback) {
+                    try {
+                        progressCallback(30);
+                    } catch (progressError) {
+                        // Ignore
+                    }
+                }
+
+                // 1. Lấy presigned URL cho single file
+                const presignedResult = await getPresignedUrlForSingleFile({
+                    fileId: fileId,
+                    filePath: filePath,
+                    bucketName: bucketName
+                });
+
+                if (!presignedResult.success || !presignedResult.url) {
+                    console.log('📄 [Document Upload] ❌ Không thể lấy presigned URL:', presignedResult.error);
+                    return { success: false, msg: 'Không thể lấy presigned URL: ' + presignedResult.error };
+                }
+
+                const presignedUrl = presignedResult.url;
+                console.log('📄 [Document Upload] ✅ Lấy presigned URL thành công');
+
+                // Update progress 50% (đang upload)
+                if (progressCallback) {
+                    try {
+                        progressCallback(50);
+                    } catch (progressError) {
+                        // Ignore
+                    }
+                }
+
+                // 2. Upload với presigned URL dùng react-native-blob-util
+                // ✅ RNBlobUtil.fetch() - không dùng Transfer-Encoding: chunked, gửi Content-Length thật
+                console.log('📄 [Document Upload] Bắt đầu upload với presigned URL (RNBlobUtil)...');
+                
+                const uploadStartTime = Date.now();
+                
+                try {
+                    // RNBlobUtil.fetch() upload trực tiếp từ fileUri
+                    // ✅ GIẢI PHÁP: KHÔNG set headers gì cả
+                    // Presigned URL chỉ ký host header → RNBlobUtil muốn thêm headers gì cứ để nó thêm
+                    const uploadResponse = await RNBlobUtil.fetch(
+                        'PUT',
+                        presignedUrl,
+                        {},  // ✅ Để trống - KHÔNG set headers gì cả
+                        RNBlobUtil.wrap(fileUri) // Wrap fileUri để upload trực tiếp từ file
+                    );
+
+                    const uploadTime = Date.now() - uploadStartTime;
+                    const status = uploadResponse.info().status;
+
+                    if (status < 200 || status >= 300) {
+                        let errorMessage = `HTTP ${status}`;
+                        try {
+                            const responseText = await uploadResponse.text();
+                            if (responseText) {
+                                errorMessage = responseText;
+                            }
+                        } catch (e) {
+                            // Ignore
+                        }
+                        console.log('📄 [Document Upload] ❌ Upload error:', errorMessage);
+                        return { success: false, msg: 'Không thể tải lên tài liệu: ' + errorMessage };
+                    }
+
+                    // Update progress 100% (upload xong)
+                    if (progressCallback) {
+                        try {
+                            progressCallback(100);
+                        } catch (progressError) {
+                            // Ignore
+                        }
+                    }
+
+                    console.log(`📄 [Document Upload] ✅ Upload thành công với presigned URL (RNBlobUtil)! (${(uploadTime / 1000).toFixed(2)}s)`);
+                    return { 
+                        success: true, 
+                        data: filePath,
+                        isChunked: false,
+                        usedPresignedUrl: true
+                    };
+                } catch (error) {
+                    console.log('📄 [Document Upload] ❌ Upload error:', error);
+                    return { success: false, msg: 'Không thể tải lên tài liệu: ' + (error.message || String(error)) };
+                }
+            }
         } catch (error) {
-            console.log('Document upload error:', error);
+            console.log('📄 [Document Upload] ❌ Upload error:', error);
             return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
         }
     },
@@ -201,6 +380,32 @@ export const documentService = {
             return { success: true, data };
         } catch (error) {
             console.log('Error in updateDocument:', error);
+            return { success: false, msg: error.message };
+        }
+    },
+
+    // Cập nhật file_path của tài liệu (sau khi merge chunks xong)
+    updateDocumentFilePath: async (documentId, filePath) => {
+        try {
+            const { data, error } = await supabase
+                .from('documents')
+                .update({
+                    file_path: filePath,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', documentId)
+                .select()
+                .single();
+
+            if (error) {
+                console.log('Error updating document file_path:', error);
+                return { success: false, msg: error.message };
+            }
+
+            console.log('📄 [Document Upload] ✅ Updated document file_path:', filePath);
+            return { success: true, data };
+        } catch (error) {
+            console.log('Error in updateDocumentFilePath:', error);
             return { success: false, msg: error.message };
         }
     },

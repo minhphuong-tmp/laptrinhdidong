@@ -34,6 +34,8 @@ const UploadDocument = () => {
     // UI state
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadStatus, setUploadStatus] = useState(''); // 'uploading', 'processing', 'completed'
 
     const categories = ['Lý thuyết', 'Thực hành', 'Video', 'Thi cử'];
 
@@ -101,22 +103,54 @@ const UploadDocument = () => {
 
         setLoading(true);
         setError('');
+        setUploadProgress(0);
+        setUploadStatus('uploading');
 
         try {
             // 1. Upload file lên Supabase Storage
             const fileExtension = getFileExtension(selectedFile.name);
             const fileName = `${Date.now()}_${selectedFile.name}`;
+            const fileSize = selectedFile.size || 0;
 
             console.log('Uploading file:', fileName);
+
+            // Lưu documentId để update sau khi merge xong
+            let savedDocumentId = null;
+
             const uploadResult = await documentService.uploadDocumentFile(
                 selectedFile.uri,
                 user.id,
-                fileName
+                fileName,
+                fileSize,
+                (progress) => {
+                    // Update progress
+                    setUploadProgress(progress);
+                    if (progress < 80) {
+                        setUploadStatus('uploading');
+                    } else if (progress < 100) {
+                        setUploadStatus('processing');
+                    } else {
+                        setUploadStatus('completed');
+                    }
+                },
+                // Callback khi merge xong (chỉ cho file lớn)
+                async (fileUrl, finalPath) => {
+                    // Update document file_path sau khi merge xong
+                    if (savedDocumentId) {
+                        try {
+                            await documentService.updateDocumentFilePath(savedDocumentId, finalPath);
+                            console.log('📄 [Document Upload] ✅ Updated document file_path sau khi merge');
+                        } catch (updateError) {
+                            console.log('📄 [Document Upload] ⚠️ Không thể update file_path:', updateError.message);
+                        }
+                    }
+                }
             );
 
             if (!uploadResult.success) {
                 setError(uploadResult.msg || 'Không thể tải lên file');
                 setLoading(false);
+                setUploadStatus('');
                 return;
             }
 
@@ -132,8 +166,8 @@ const UploadDocument = () => {
                 description: description.trim(),
                 category: category,
                 file_type: fileExtension,
-                file_size: selectedFile.size || 0,
-                file_path: uploadResult.data, // Đường dẫn từ upload
+                file_size: fileSize,
+                file_path: uploadResult.data, // Đường dẫn từ upload (sẽ được update sau khi merge xong nếu là chunk upload)
                 tags: tagsArray,
                 is_public: isPublic
             };
@@ -144,27 +178,57 @@ const UploadDocument = () => {
             if (!createResult.success) {
                 setError(createResult.msg || 'Không thể tạo bản ghi tài liệu');
                 setLoading(false);
+                setUploadStatus('');
                 return;
             }
 
-            // 4. Thành công - hiển thị thông báo và quay lại
-            Alert.alert(
-                'Thành công',
-                'Đã tải lên tài liệu thành công!',
-                [
-                    {
-                        text: 'OK',
-                        onPress: () => {
-                            router.back();
+            // Lưu documentId để update sau khi merge xong
+            savedDocumentId = createResult.data?.id;
+
+            // 4. Kiểm tra xem có phải chunk upload không
+            if (uploadResult.isChunked) {
+                // File lớn - chunks đã upload xong (80%), merge đang chạy ở background
+                // Hiển thị thông báo thành công ngay và quay lại
+                setUploadStatus('completed');
+                setUploadProgress(80); // Chunks upload xong
+                setLoading(false);
+                
+                Alert.alert(
+                    'Upload thành công',
+                    'Chunks đã được tải lên thành công! File đang được xử lý ở background. Bạn có thể tiếp tục sử dụng ứng dụng.',
+                    [
+                        {
+                            text: 'OK',
+                            onPress: () => {
+                                router.back();
+                            }
                         }
-                    }
-                ]
-            );
+                    ]
+                );
+            } else {
+                // File nhỏ - upload xong hoàn toàn
+                setUploadStatus('completed');
+                setUploadProgress(100);
+                
+                Alert.alert(
+                    'Thành công',
+                    'Đã tải lên tài liệu thành công!',
+                    [
+                        {
+                            text: 'OK',
+                            onPress: () => {
+                                setLoading(false);
+                                router.back();
+                            }
+                        }
+                    ]
+                );
+            }
         } catch (error) {
             console.error('Error uploading document:', error);
             setError('Có lỗi xảy ra: ' + error.message);
-        } finally {
             setLoading(false);
+            setUploadStatus('');
         }
     };
 
@@ -298,6 +362,28 @@ const UploadDocument = () => {
                         </View>
                     )}
                 </View>
+
+                {/* Upload Progress */}
+                {loading && uploadStatus ? (
+                    <View style={styles.progressContainer}>
+                        <View style={styles.progressHeader}>
+                            <Text style={styles.progressStatus}>
+                                {uploadStatus === 'uploading' && '📤 Đang tải lên...'}
+                                {uploadStatus === 'processing' && '⚙️ Đang xử lý...'}
+                                {uploadStatus === 'completed' && '✅ Hoàn tất'}
+                            </Text>
+                            <Text style={styles.progressPercent}>{uploadProgress}%</Text>
+                        </View>
+                        <View style={styles.progressBarContainer}>
+                            <View style={[styles.progressBar, { width: `${uploadProgress}%` }]} />
+                        </View>
+                        {uploadStatus === 'processing' && (
+                            <Text style={styles.progressNote}>
+                                Chunks đã tải lên thành công. File đang được gộp ở background...
+                            </Text>
+                        )}
+                    </View>
+                ) : null}
 
                 {/* Error Message */}
                 {error ? (
@@ -502,6 +588,47 @@ const styles = StyleSheet.create({
         fontWeight: theme.fonts.semiBold,
         color: 'white',
         marginLeft: wp(2),
+    },
+    progressContainer: {
+        backgroundColor: theme.colors.backgroundSecondary,
+        borderRadius: theme.radius.md,
+        padding: wp(4),
+        marginBottom: hp(2),
+        ...theme.shadows.small,
+    },
+    progressHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: hp(1),
+    },
+    progressStatus: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.medium,
+        color: theme.colors.text,
+    },
+    progressPercent: {
+        fontSize: hp(1.6),
+        fontWeight: theme.fonts.semiBold,
+        color: theme.colors.primary,
+    },
+    progressBarContainer: {
+        height: hp(0.8),
+        backgroundColor: theme.colors.border,
+        borderRadius: theme.radius.full,
+        overflow: 'hidden',
+        marginBottom: hp(0.5),
+    },
+    progressBar: {
+        height: '100%',
+        backgroundColor: theme.colors.primary,
+        borderRadius: theme.radius.full,
+    },
+    progressNote: {
+        fontSize: hp(1.3),
+        color: theme.colors.textSecondary,
+        fontStyle: 'italic',
+        marginTop: hp(0.5),
     },
 });
 

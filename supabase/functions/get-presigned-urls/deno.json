@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "supabase": "jsr:@supabase/supabase-js@2",
+    "@aws-sdk/client-s3": "https://esm.sh/@aws-sdk/client-s3@3",
+    "@aws-sdk/s3-request-presigner": "https://esm.sh/@aws-sdk/s3-request-presigner@3"
+  }
+}

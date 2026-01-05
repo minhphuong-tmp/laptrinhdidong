@@ -1,9 +1,11 @@
+import * as FileSystem from 'expo-file-system/legacy';
+import RNBlobUtil from 'react-native-blob-util';
 import { supabaseUrl } from "../constants/index";
 import { supabase } from "../lib/supabase";
 
 // ===== CHUNK UPLOAD CONFIG =====
-export const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB per chunk (tăng từ 5MB để giảm số lượng chunks và overhead)
-export const MAX_PARALLEL_UPLOADS = 15; // Upload tối đa 15 chunks song song (tăng từ 10 để tăng tốc độ upload)
+export const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
+export const MAX_PARALLEL_UPLOADS = 2; // Upload tối đa 2 chunks song song
 export const CHUNK_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5MB - file >= 5MB sẽ dùng chunk upload
 export const CHUNK_RETRY_ATTEMPTS = 3; // Số lần retry khi upload chunk fail
 export const CHUNK_RETRY_DELAY = 1000; // Delay giữa các lần retry (ms)
@@ -293,6 +295,207 @@ const getRetryDelay = (attempt) => {
 };
 
 /**
+ * Upload một chunk với presigned URL (PUT request trực tiếp lên S3 - nhanh hơn nhiều)
+ * @param {Object} params - Parameters object
+ * @param {Blob} params.blob - Blob gốc của file (đã fetch 1 lần)
+ * @param {number} params.start - Byte start của chunk
+ * @param {number} params.end - Byte end của chunk
+ * @param {number} params.chunkIndex - Index của chunk (0-based)
+ * @param {number} params.totalChunks - Tổng số chunks
+ * @param {string} params.presignedUrl - Presigned URL cho chunk này
+ * @param {string} params.mimeType - MIME type của file
+ * @returns {Promise<{success: boolean, path?: string, error?: string}>}
+ */
+export const uploadSingleChunkWithPresignedUrl = async ({
+    blob,
+    start,
+    end,
+    chunkIndex,
+    totalChunks,
+    presignedUrl,
+    mimeType
+}) => {
+    const typeEmoji = '🚀';
+    
+    // Slice chunk từ Blob gốc
+    const blobChunk = blob.slice(start, end);
+    const chunkSizeMB = (blobChunk.size / (1024 * 1024)).toFixed(2);
+
+    console.log(`${typeEmoji} [Presigned Upload] Đang upload chunk ${chunkIndex + 1}/${totalChunks} (${chunkSizeMB} MB) với presigned URL...`);
+
+    // Convert Blob chunk thành ArrayBuffer (giữ nguyên, không convert sang Uint8Array)
+    let chunkData;
+    try {
+        if (typeof FileReader !== 'undefined') {
+            // Browser/Web: Dùng FileReader
+            chunkData = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    resolve(reader.result); // ArrayBuffer
+                };
+                reader.onerror = reject;
+                reader.readAsArrayBuffer(blobChunk);
+            });
+        } else {
+            // React Native: Dùng fetch để convert Blob → Response → ArrayBuffer
+            const response = await fetch(blobChunk);
+            chunkData = await response.arrayBuffer(); // Giữ ArrayBuffer, không convert sang Uint8Array
+        }
+    } catch (convertError) {
+        console.log(`${typeEmoji} [Presigned Upload] ❌ Không thể convert Blob chunk:`, convertError);
+        return {
+            success: false,
+            error: `Cannot convert Blob chunk: ${convertError.message}`
+        };
+    }
+
+    // Retry logic với exponential backoff
+    let lastError = null;
+    let tempFileUri = null; // Track temp file để cleanup
+    
+    for (let attempt = 0; attempt < CHUNK_RETRY_ATTEMPTS; attempt++) {
+        try {
+            const uploadStartTime = Date.now();
+            
+            console.log(`${typeEmoji} [Presigned Upload] Bắt đầu PUT request chunk ${chunkIndex + 1}/${totalChunks} (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS})...`);
+            console.log(`${typeEmoji} [Presigned Upload] Chunk size: ${chunkData.byteLength} bytes (${(chunkData.byteLength / (1024 * 1024)).toFixed(2)} MB)`);
+            
+            // ✅ DEBUG LOGGING
+            console.log(`${typeEmoji} [Presigned Upload] Using presigned URL: ${presignedUrl.substring(0, 120)}...`);
+
+            // ✅ GIẢI PHÁP: Dùng react-native-blob-util thay vì fetch()
+            // RNBlobUtil không dùng Transfer-Encoding: chunked, gửi Content-Length thật → S3 proxy CHẤP NHẬN
+            // 1. Ghi chunk ra file tạm (RNBlobUtil.wrap() cần file path)
+            const { Buffer } = require('buffer');
+            const base64 = Buffer.from(chunkData).toString('base64');
+            tempFileUri = `${FileSystem.cacheDirectory}chunk_${chunkIndex}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+            
+            await FileSystem.writeAsStringAsync(tempFileUri, base64, {
+                encoding: FileSystem.EncodingType.Base64,
+            });
+            
+            console.log(`${typeEmoji} [Presigned Upload] ✅ Đã ghi chunk vào file tạm: ${tempFileUri.substring(tempFileUri.lastIndexOf('/') + 1)}`);
+
+            // 2. Upload với RNBlobUtil.fetch()
+            // ✅ GIẢI PHÁP: KHÔNG set headers gì cả
+            // Presigned URL chỉ ký host header → RNBlobUtil muốn thêm headers gì cứ để nó thêm
+            const uploadResponse = await RNBlobUtil.fetch(
+                'PUT',
+                presignedUrl,
+                {},  // ✅ Để trống - KHÔNG set headers gì cả
+                RNBlobUtil.wrap(tempFileUri) // Wrap file tạm để upload
+            );
+
+            const uploadTime = Date.now() - uploadStartTime;
+            const status = uploadResponse.info().status;
+
+            // 3. Cleanup file tạm
+            try {
+                await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
+                tempFileUri = null; // Reset để không cleanup lại
+            } catch (cleanupError) {
+                console.log(`${typeEmoji} [Presigned Upload] ⚠️ Không thể xóa file tạm:`, cleanupError);
+            }
+
+            if (status < 200 || status >= 300) {
+                let errorMessage = `HTTP ${status}`;
+                try {
+                    const responseText = await uploadResponse.text();
+                    if (responseText) {
+                        errorMessage = responseText;
+                    }
+                } catch (e) {
+                    // Ignore
+                }
+                
+                // Kiểm tra nếu presigned URL hết hạn (403 hoặc 401)
+                if (status === 403 || status === 401) {
+                    throw new Error(`Presigned URL expired or invalid: ${errorMessage}`);
+                }
+
+                lastError = new Error(errorMessage);
+                console.log(`${typeEmoji} [Presigned Upload] ❌ Chunk ${chunkIndex + 1}/${totalChunks} upload fail (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, errorMessage);
+
+                // Nếu không phải lần retry cuối, đợi rồi retry
+                if (attempt < CHUNK_RETRY_ATTEMPTS - 1) {
+                    const delay = getRetryDelay(attempt);
+                    console.log(`${typeEmoji} [Presigned Upload] Retry sau ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+
+                // Lần retry cuối cùng cũng fail
+                return {
+                    success: false,
+                    error: errorMessage
+                };
+            }
+
+            // ✅ Upload thành công
+            console.log(`${typeEmoji} [Presigned Upload] ✅ Chunk ${chunkIndex + 1}/${totalChunks} upload thành công (${(uploadTime / 1000).toFixed(2)}s)`);
+            
+            return {
+                success: true,
+                path: `temp/chunks/${chunkIndex}` // Path tương đối
+            };
+
+        } catch (error) {
+            // Cleanup file tạm nếu có lỗi
+            if (tempFileUri) {
+                try {
+                    await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
+                    tempFileUri = null; // Reset để không cleanup lại
+                } catch (cleanupError) {
+                    // Ignore cleanup errors
+                }
+            }
+
+            // ✅ Sửa error handling để log đúng error message
+            let errorMessage;
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && error.errorMessage) {
+                errorMessage = error.errorMessage;
+            } else {
+                errorMessage = String(error);
+            }
+            
+            lastError = error instanceof Error ? error : new Error(errorMessage);
+            console.log(`${typeEmoji} [Presigned Upload] ❌ Chunk ${chunkIndex + 1}/${totalChunks} upload error (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, errorMessage);
+
+            // Kiểm tra nếu presigned URL hết hạn
+            if (errorMessage.includes('Presigned URL expired') || errorMessage.includes('expired')) {
+                return {
+                    success: false,
+                    error: 'Presigned URL expired. Please get new presigned URLs.',
+                    needsNewPresignedUrls: true
+                };
+            }
+
+            // Nếu không phải lần retry cuối, đợi rồi retry
+            if (attempt < CHUNK_RETRY_ATTEMPTS - 1) {
+                const delay = getRetryDelay(attempt);
+                console.log(`${typeEmoji} [Presigned Upload] Retry sau ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+
+            // Lần retry cuối cùng cũng fail
+            return {
+                success: false,
+                error: errorMessage || 'Unknown error occurred'
+            };
+        }
+    }
+
+    // Không bao giờ đến đây, nhưng để TypeScript happy
+    return {
+        success: false,
+        error: lastError?.message || 'Unknown error occurred'
+    };
+};
+
+/**
  * Upload một chunk lên Supabase Storage (Binary Only - KHÔNG base64, KHÔNG arrayBuffer)
  * @param {Object} params - Parameters object
  * @param {Blob} params.blob - Blob gốc của file (đã fetch 1 lần)
@@ -302,6 +505,7 @@ const getRetryDelay = (attempt) => {
  * @param {number} params.chunkIndex - Index của chunk (0-based)
  * @param {number} params.totalChunks - Tổng số chunks
  * @param {string} params.mimeType - MIME type của file
+ * @param {string} params.bucketName - Bucket name (default: 'media')
  * @returns {Promise<{success: boolean, path?: string, error?: string}>}
  */
 export const uploadSingleChunk = async ({
@@ -311,7 +515,8 @@ export const uploadSingleChunk = async ({
     fileId,
     chunkIndex,
     totalChunks,
-    mimeType
+    mimeType,
+    bucketName = 'media'
 }) => {
     const chunkPath = `temp/chunks/${fileId}/chunk_${chunkIndex}`;
     const typeEmoji = '📦';
@@ -358,21 +563,43 @@ export const uploadSingleChunk = async ({
     for (let attempt = 0; attempt < CHUNK_RETRY_ATTEMPTS; attempt++) {
         try {
             const uploadStartTime = Date.now();
+            
+            console.log(`${typeEmoji} [Chunk Upload] Bắt đầu upload chunk ${chunkIndex + 1}/${totalChunks} lên bucket "${bucketName}" (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS})...`);
+            console.log(`${typeEmoji} [Chunk Upload] Chunk path: ${chunkPath}`);
+            console.log(`${typeEmoji} [Chunk Upload] Chunk size: ${chunkData.length} bytes (${(chunkData.length / (1024 * 1024)).toFixed(2)} MB)`);
 
             // Upload Uint8Array (Supabase Storage React Native hỗ trợ Uint8Array)
-            const { data, error } = await supabase.storage
-                .from('media')
+            const uploadPromise = supabase.storage
+                .from(bucketName)
                 .upload(chunkPath, chunkData, {
                     cacheControl: '3600',
                     upsert: false,
                     contentType: mimeType || 'application/octet-stream'
                 });
 
+            // Thêm timeout cho upload (5 phút)
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Upload timeout: Chunk upload mất quá 5 phút')), 300000);
+            });
+
+            const { data, error } = await Promise.race([uploadPromise, timeoutPromise]);
+
             const uploadTime = Date.now() - uploadStartTime;
 
             if (error) {
                 lastError = error;
-                console.log(`${typeEmoji} [Chunk Upload] Chunk ${chunkIndex + 1}/${totalChunks} upload fail (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, error.message);
+                console.log(`${typeEmoji} [Chunk Upload] ❌ Chunk ${chunkIndex + 1}/${totalChunks} upload fail (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, error);
+                console.log(`${typeEmoji} [Chunk Upload] Error details:`, JSON.stringify(error, null, 2));
+
+                // Kiểm tra nếu là lỗi bucket không tồn tại
+                if (error.message && (error.message.includes('Bucket not found') || error.message.includes('does not exist'))) {
+                    console.log(`${typeEmoji} [Chunk Upload] ❌ Bucket "${bucketName}" không tồn tại hoặc không có quyền truy cập!`);
+                    return {
+                        success: false,
+                        error: `Bucket "${bucketName}" không tồn tại hoặc không có quyền. Vui lòng kiểm tra cấu hình Supabase Storage.`,
+                        path: chunkPath
+                    };
+                }
 
                 // Nếu không phải lần retry cuối, đợi rồi retry
                 if (attempt < CHUNK_RETRY_ATTEMPTS - 1) {
@@ -385,20 +612,27 @@ export const uploadSingleChunk = async ({
                 // Lần retry cuối cùng cũng fail
                 return {
                     success: false,
-                    error: error.message,
+                    error: error.message || JSON.stringify(error),
                     path: chunkPath
                 };
             }
 
             // Upload thành công
             console.log(`${typeEmoji} [Chunk Upload] ✅ Chunk ${chunkIndex + 1}/${totalChunks} upload thành công (${(uploadTime / 1000).toFixed(2)}s)`);
+            console.log(`${typeEmoji} [Chunk Upload] Upload data:`, data);
             return {
                 success: true,
                 path: chunkPath
             };
         } catch (error) {
             lastError = error;
-            console.log(`${typeEmoji} [Chunk Upload] Chunk ${chunkIndex + 1}/${totalChunks} upload error (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, error.message);
+            console.log(`${typeEmoji} [Chunk Upload] ❌ Chunk ${chunkIndex + 1}/${totalChunks} upload exception (attempt ${attempt + 1}/${CHUNK_RETRY_ATTEMPTS}):`, error);
+            console.log(`${typeEmoji} [Chunk Upload] Exception details:`, error.message, error.stack);
+
+            // Kiểm tra nếu là lỗi timeout
+            if (error.message && error.message.includes('timeout')) {
+                console.log(`${typeEmoji} [Chunk Upload] ❌ Upload timeout - có thể do mạng chậm hoặc file quá lớn`);
+            }
 
             // Nếu không phải lần retry cuối, đợi rồi retry
             if (attempt < CHUNK_RETRY_ATTEMPTS - 1) {
@@ -411,7 +645,7 @@ export const uploadSingleChunk = async ({
             // Lần retry cuối cùng cũng fail
             return {
                 success: false,
-                error: error.message,
+                error: error.message || 'Unknown error',
                 path: chunkPath
             };
         }
@@ -436,21 +670,45 @@ const promisePool = async (items, fn, limit) => {
     const results = [];
     const executing = [];
 
-    for (const item of items) {
-        const promise = Promise.resolve().then(() => fn(item));
+    console.log(`[Promise Pool] Bắt đầu xử lý ${items.length} items với limit ${limit}`);
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        console.log(`[Promise Pool] Tạo promise cho item ${i + 1}/${items.length}`);
+        
+        const promise = Promise.resolve().then(() => {
+            console.log(`[Promise Pool] Bắt đầu execute item ${i + 1}/${items.length}`);
+            return fn(item);
+        }).catch((error) => {
+            console.log(`[Promise Pool] ❌ Error trong item ${i + 1}/${items.length}:`, error);
+            throw error;
+        });
+        
         results.push(promise);
 
-        if (limit <= items.length) {
-            const e = promise.then(() => executing.splice(executing.indexOf(e), 1));
+        // Luôn giới hạn concurrent nếu có nhiều items hơn limit
+        if (items.length > limit) {
+            const e = promise.finally(() => {
+                const index = executing.indexOf(e);
+                if (index > -1) {
+                    executing.splice(index, 1);
+                }
+                console.log(`[Promise Pool] Item ${i + 1} completed, executing count: ${executing.length}`);
+            });
             executing.push(e);
 
             if (executing.length >= limit) {
+                console.log(`[Promise Pool] Đạt limit ${limit}, đợi một promise hoàn thành...`);
                 await Promise.race(executing);
+                console.log(`[Promise Pool] Một promise đã hoàn thành, tiếp tục...`);
             }
         }
     }
 
-    return Promise.all(results);
+    console.log(`[Promise Pool] Đợi tất cả promises hoàn thành...`);
+    const allResults = await Promise.all(results);
+    console.log(`[Promise Pool] ✅ Tất cả promises đã hoàn thành, results: ${allResults.length}`);
+    return allResults;
 };
 
 /**
@@ -472,13 +730,19 @@ export const uploadChunksParallel = async ({
     mimeType,
     fileType = null,
     onProgress = null,
-    onPreviewReady = null
+    onPreviewReady = null,
+    bucketName = null
 }) => {
     const typeEmoji = '📦';
     const startTime = Date.now();
 
+    // Xác định bucket name dựa vào fileType nếu không được chỉ định
+    // Documents và media đều dùng bucket "media" (phân biệt bằng folder path)
+    const targetBucket = bucketName || 'media';
+
     console.log(`${typeEmoji} [Chunk Upload Parallel] Bắt đầu upload song song...`);
     console.log(`${typeEmoji} [Chunk Upload Parallel] File size: ${(fileSize / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`${typeEmoji} [Chunk Upload Parallel] Using bucket: ${targetBucket}`);
 
     // Validate onProgress callback
     const progressCallback = typeof onProgress === 'function' ? onProgress : null;
@@ -521,22 +785,54 @@ export const uploadChunksParallel = async ({
     console.log(`${typeEmoji} [Chunk Upload Parallel] Tổng số chunks: ${totalChunks}`);
     console.log(`${typeEmoji} [Chunk Upload Parallel] Upload song song tối đa ${MAX_PARALLEL_UPLOADS} chunks cùng lúc`);
 
-    // 3. Tạo array các tasks để upload (KHÔNG lưu chunk data, chỉ metadata)
+    // 3. Lấy presigned URLs cho tất cả chunks (TRƯỚC KHI upload)
+    console.log(`${typeEmoji} [Chunk Upload Parallel] Lấy presigned URLs cho ${totalChunks} chunks...`);
+    const presignedUrlsResult = await getPresignedUrlsForChunks({
+        fileId: fileId,
+        totalChunks: totalChunks,
+        bucketName: targetBucket
+    });
+
+    if (!presignedUrlsResult.success || !presignedUrlsResult.urls || presignedUrlsResult.urls.length !== totalChunks) {
+        const errorMsg = presignedUrlsResult.error || 'Failed to get presigned URLs';
+        console.log(`${typeEmoji} [Chunk Upload Parallel] ❌ Không thể lấy presigned URLs: ${errorMsg}`);
+        return {
+            success: false,
+            error: `Failed to get presigned URLs: ${errorMsg}`,
+            uploadedChunks: []
+        };
+    }
+
+    const presignedUrls = presignedUrlsResult.urls;
+    console.log(`${typeEmoji} [Chunk Upload Parallel] ✅ Lấy ${presignedUrls.length} presigned URLs thành công!`);
+
+    // 4. Tạo array các tasks để upload với presigned URLs
     const uploadTasks = chunksMetadata.map((chunkMeta) => {
         return async () => {
-            // Upload chunk này
-            const result = await uploadSingleChunk({
+            // Upload chunk này với presigned URL
+            const presignedUrl = presignedUrls[chunkMeta.index];
+            if (!presignedUrl) {
+                return {
+                    chunkIndex: chunkMeta.index,
+                    result: {
+                        success: false,
+                        error: `Presigned URL not found for chunk ${chunkMeta.index}`
+                    }
+                };
+            }
+
+            const result = await uploadSingleChunkWithPresignedUrl({
                 blob: fileBlob,
                 start: chunkMeta.start,
                 end: chunkMeta.end,
-                fileId: fileId,
                 chunkIndex: chunkMeta.index,
                 totalChunks: totalChunks,
+                presignedUrl: presignedUrl,
                 mimeType: mimeType
             });
 
             // Release reference để GC (chunk đã upload xong)
-            // Note: blobChunk trong uploadSingleChunk sẽ được GC sau khi function return
+            // Note: blobChunk trong uploadSingleChunkWithPresignedUrl sẽ được GC sau khi function return
 
             return {
                 chunkIndex: chunkMeta.index,
@@ -552,42 +848,54 @@ export const uploadChunksParallel = async ({
     let firstError = null;
 
     try {
+        console.log(`${typeEmoji} [Chunk Upload Parallel] Bắt đầu upload ${totalChunks} chunks với Promise Pool (max ${MAX_PARALLEL_UPLOADS} concurrent)...`);
+        
         // Chạy upload tasks với Promise Pool
         const results = await promisePool(
             uploadTasks,
             async (task) => {
-                const taskResult = await task();
+                try {
+                    console.log(`${typeEmoji} [Chunk Upload Parallel] Bắt đầu execute task...`);
+                    const taskResult = await task();
+                    console.log(`${typeEmoji} [Chunk Upload Parallel] Task completed, result:`, taskResult.result.success ? 'SUCCESS' : 'FAILED');
 
-                // Update progress (0-80% cho upload chunks)
-                completedCount++;
-                const progress = Math.floor((completedCount / totalChunks) * 80);
-                if (progressCallback) {
-                    try {
-                        progressCallback(progress);
-                    } catch (progressError) {
-                        console.log(`${typeEmoji} [Chunk Upload Parallel] ⚠️ Progress callback error:`, progressError.message);
+                    // Update progress (0-80% cho upload chunks)
+                    completedCount++;
+                    const progress = Math.floor((completedCount / totalChunks) * 80);
+                    if (progressCallback) {
+                        try {
+                            progressCallback(progress);
+                        } catch (progressError) {
+                            console.log(`${typeEmoji} [Chunk Upload Parallel] ⚠️ Progress callback error:`, progressError.message);
+                        }
                     }
-                }
 
-                // Check kết quả
-                if (taskResult.result.success) {
-                    uploadedChunks.push({
-                        index: taskResult.chunkIndex,
-                        path: taskResult.result.path
-                    });
-                    console.log(`${typeEmoji} [Chunk Upload Parallel] ✅ Progress: ${completedCount}/${totalChunks} chunks (${progress}%)`);
-                } else {
-                    hasError = true;
-                    if (!firstError) {
-                        firstError = taskResult.result.error;
+                    // Check kết quả
+                    if (taskResult.result.success) {
+                        uploadedChunks.push({
+                            index: taskResult.chunkIndex,
+                            path: taskResult.result.path
+                        });
+                        console.log(`${typeEmoji} [Chunk Upload Parallel] ✅ Progress: ${completedCount}/${totalChunks} chunks (${progress}%)`);
+                    } else {
+                        hasError = true;
+                        if (!firstError) {
+                            firstError = taskResult.result.error;
+                        }
+                        console.log(`${typeEmoji} [Chunk Upload Parallel] ❌ Chunk ${taskResult.chunkIndex + 1}/${totalChunks} upload fail: ${taskResult.result.error}`);
                     }
-                    console.log(`${typeEmoji} [Chunk Upload Parallel] ❌ Chunk ${taskResult.chunkIndex + 1}/${totalChunks} upload fail: ${taskResult.result.error}`);
-                }
 
-                return taskResult;
+                    return taskResult;
+                } catch (taskError) {
+                    console.log(`${typeEmoji} [Chunk Upload Parallel] ❌ Task execution error:`, taskError);
+                    console.log(`${typeEmoji} [Chunk Upload Parallel] Task error stack:`, taskError.stack);
+                    throw taskError;
+                }
             },
             MAX_PARALLEL_UPLOADS
         );
+        
+        console.log(`${typeEmoji} [Chunk Upload Parallel] Promise Pool completed, results count: ${results.length}`);
 
         const totalTime = Date.now() - startTime;
 
@@ -636,7 +944,349 @@ export const uploadChunksParallel = async ({
 };
 
 /**
- * Merge chunks trên server bằng Edge Function (Streaming Merge)
+ * Merge document chunks trên server bằng Edge Function (Streaming Merge)
+ * @param {Object} params - Parameters object
+ * @param {string} params.fileId - Unique ID của file
+ * @param {number} params.totalChunks - Tổng số chunks
+ * @param {string} params.finalPath - Đường dẫn cuối cùng của file (ví dụ: 'documents/user_id/file.pdf')
+ * @param {Function} params.onProgress - Callback để update progress (80-100%)
+ * @returns {Promise<{success: boolean, fileUrl?: string, error?: string}>}
+ */
+export const mergeDocumentChunksOnServer = async ({
+    fileId,
+    totalChunks,
+    finalPath,
+    bucketName = 'media',
+    onProgress = null
+}) => {
+    const typeEmoji = '📄';
+    const startTime = Date.now();
+
+    console.log(`${typeEmoji} [Merge Document Chunks] Bắt đầu merge ${totalChunks} chunks trên server...`);
+    console.log(`${typeEmoji} [Merge Document Chunks] File ID: ${fileId}`);
+    console.log(`${typeEmoji} [Merge Document Chunks] Final path: ${finalPath}`);
+    console.log(`${typeEmoji} [Merge Document Chunks] Using bucket: ${bucketName}`);
+
+    // Validate onProgress callback
+    const progressCallback = typeof onProgress === 'function' ? onProgress : null;
+
+    try {
+        // Update progress 80% (bắt đầu merge)
+        if (progressCallback) {
+            try {
+                progressCallback(80);
+            } catch (progressError) {
+                console.log(`${typeEmoji} [Merge Document Chunks] ⚠️ Progress callback error:`, progressError.message);
+            }
+        }
+
+        // Lấy session để có Authorization header
+        const { data: { session } } = await supabase.auth.getSession();
+        const authToken = session?.access_token;
+
+        // Gọi Edge Function merge-document-chunks
+        const edgeFunctionUrl = `${supabaseUrl}/functions/v1/merge-document-chunks`;
+        console.log(`${typeEmoji} [Merge Document Chunks] Calling Edge Function: ${edgeFunctionUrl}`);
+
+        const mergeStartTime = Date.now();
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        // Thêm Authorization header nếu có token
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        // Gọi Edge Function với timeout (5 phút cho file lớn)
+        const fetchPromise = fetch(edgeFunctionUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                fileId: fileId,
+                totalChunks: totalChunks,
+                finalPath: finalPath,
+                bucketName: bucketName
+            })
+        });
+
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Merge timeout: Edge Function không phản hồi sau 5 phút')), 300000); // 5 phút
+        });
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.message || errorData.error || errorMessage;
+            } catch (e) {
+                // Nếu không parse được JSON, dùng status text
+                const text = await response.text().catch(() => '');
+                if (text) {
+                    errorMessage = text;
+                }
+            }
+
+            // Kiểm tra nếu function chưa được deploy
+            if (response.status === 404) {
+                throw new Error(`Edge Function 'merge-document-chunks' chưa được deploy. Vui lòng deploy function trước khi sử dụng.`);
+            }
+
+            throw new Error(errorMessage);
+        }
+
+        const result = await response.json();
+        const mergeTime = Date.now() - mergeStartTime;
+
+        if (!result.success) {
+            throw new Error(result.error || 'Merge failed on server');
+        }
+
+        // Update progress 100% (merge xong)
+        if (progressCallback) {
+            try {
+                progressCallback(100);
+            } catch (progressError) {
+                console.log(`${typeEmoji} [Merge Document Chunks] ⚠️ Progress callback error:`, progressError.message);
+            }
+        }
+
+        const totalTime = Date.now() - startTime;
+        console.log(`${typeEmoji} [Merge Document Chunks] ✅ Merge thành công! (${(mergeTime / 1000).toFixed(2)}s)`);
+        console.log(`${typeEmoji} [Merge Document Chunks] Final URL: ${result.fileUrl}`);
+        console.log(`${typeEmoji} [Merge Document Chunks] Tổng thời gian (upload + merge): ${(totalTime / 1000).toFixed(2)}s`);
+
+        return {
+            success: true,
+            fileUrl: result.fileUrl,
+            publicUrl: result.publicUrl || result.fileUrl
+        };
+
+    } catch (error) {
+        console.log(`${typeEmoji} [Merge Document Chunks] ❌ Merge error:`, error.message);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+};
+
+/**
+ * Lấy presigned URLs cho chunks từ Edge Function
+ * @param {Object} params - Parameters object
+ * @param {string} params.fileId - Unique ID của file
+ * @param {number} params.totalChunks - Tổng số chunks
+ * @param {string} params.bucketName - Bucket name ('media' hoặc 'upload')
+ * @returns {Promise<{success: boolean, urls?: Array<string>, error?: string}>}
+ */
+/**
+ * Lấy presigned URL cho single file (không chunk) - dùng để test
+ * @param {Object} params - Parameters object
+ * @param {string} params.fileId - Unique ID của file
+ * @param {string} params.filePath - Path của file trong bucket (ví dụ: documents/userId/fileName)
+ * @param {string} params.bucketName - Bucket name (default: 'media')
+ * @returns {Promise<{success: boolean, url?: string, error?: string}>}
+ */
+export const getPresignedUrlForSingleFile = async ({
+    fileId,
+    filePath,
+    bucketName = 'media'
+}) => {
+    const typeEmoji = '🔗';
+    console.log(`${typeEmoji} [Get Presigned URL] Bắt đầu lấy presigned URL cho single file...`);
+    console.log(`${typeEmoji} [Get Presigned URL] File ID: ${fileId}`);
+    console.log(`${typeEmoji} [Get Presigned URL] File path: ${filePath}`);
+    console.log(`${typeEmoji} [Get Presigned URL] Bucket: ${bucketName}`);
+
+    try {
+        // Lấy session để có Authorization header
+        const { data: { session } } = await supabase.auth.getSession();
+        const authToken = session?.access_token;
+
+        // Gọi Edge Function get-presigned-urls
+        const edgeFunctionUrl = `${supabaseUrl}/functions/v1/get-presigned-urls`;
+        console.log(`${typeEmoji} [Get Presigned URL] Calling Edge Function: ${edgeFunctionUrl}`);
+
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        // Thêm Authorization header nếu có token
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        // Gọi Edge Function với timeout (30 giây)
+        const fetchPromise = fetch(edgeFunctionUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                fileId: fileId,
+                totalChunks: 1, // Single file = 1 chunk
+                bucketName: bucketName,
+                filePath: filePath // Path cho single file
+            })
+        });
+
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Get presigned URL timeout: Edge Function không phản hồi sau 30 giây')), 30000);
+        });
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            try {
+                const errorText = await response.text();
+                if (errorText) {
+                    errorMessage = errorText;
+                }
+            } catch (e) {
+                // Ignore
+            }
+            console.log(`${typeEmoji} [Get Presigned URL] ❌ Error: ${errorMessage}`);
+            return {
+                success: false,
+                error: errorMessage
+            };
+        }
+
+        const result = await response.json();
+        
+        if (!result.success || !result.urls || result.urls.length === 0) {
+            const errorMsg = result.error || 'Failed to get presigned URL';
+            console.log(`${typeEmoji} [Get Presigned URL] ❌ Error: ${errorMsg}`);
+            return {
+                success: false,
+                error: errorMsg
+            };
+        }
+
+        const presignedUrl = result.urls[0];
+        console.log(`${typeEmoji} [Get Presigned URL] ✅ Lấy presigned URL thành công!`);
+        console.log(`${typeEmoji} [Get Presigned URL] URL preview: ${presignedUrl.substring(0, 120)}...`);
+
+        return {
+            success: true,
+            url: presignedUrl
+        };
+    } catch (error) {
+        const errorMessage = error.message || String(error);
+        console.log(`${typeEmoji} [Get Presigned URL] ❌ Exception: ${errorMessage}`);
+        return {
+            success: false,
+            error: errorMessage
+        };
+    }
+};
+
+export const getPresignedUrlsForChunks = async ({
+    fileId,
+    totalChunks,
+    bucketName = 'media'
+}) => {
+    const typeEmoji = '🔗';
+    const startTime = Date.now();
+
+    console.log(`${typeEmoji} [Get Presigned URLs] Bắt đầu lấy presigned URLs...`);
+    console.log(`${typeEmoji} [Get Presigned URLs] File ID: ${fileId}`);
+    console.log(`${typeEmoji} [Get Presigned URLs] Total chunks: ${totalChunks}`);
+    console.log(`${typeEmoji} [Get Presigned URLs] Bucket: ${bucketName}`);
+
+    try {
+        // Lấy session để có Authorization header
+        const { data: { session } } = await supabase.auth.getSession();
+        const authToken = session?.access_token;
+
+        // Gọi Edge Function get-presigned-urls
+        const edgeFunctionUrl = `${supabaseUrl}/functions/v1/get-presigned-urls`;
+        console.log(`${typeEmoji} [Get Presigned URLs] Calling Edge Function: ${edgeFunctionUrl}`);
+
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        // Thêm Authorization header nếu có token
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        // Gọi Edge Function với timeout (30 giây)
+        const fetchPromise = fetch(edgeFunctionUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                fileId: fileId,
+                totalChunks: totalChunks,
+                bucketName: bucketName
+            })
+        });
+
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Get presigned URLs timeout: Edge Function không phản hồi sau 30 giây')), 30000);
+        });
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.message || errorData.error || errorMessage;
+            } catch (e) {
+                const text = await response.text().catch(() => '');
+                if (text) {
+                    errorMessage = text;
+                }
+            }
+
+            // Kiểm tra nếu function chưa được deploy
+            if (response.status === 404) {
+                throw new Error(`Edge Function 'get-presigned-urls' chưa được deploy. Vui lòng deploy function trước khi sử dụng.`);
+            }
+
+            throw new Error(errorMessage);
+        }
+
+        const result = await response.json();
+        const elapsedTime = Date.now() - startTime;
+
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to get presigned URLs');
+        }
+
+        console.log(`${typeEmoji} [Get Presigned URLs] ✅ Lấy presigned URLs thành công! (${(elapsedTime / 1000).toFixed(2)}s)`);
+        console.log(`${typeEmoji} [Get Presigned URLs] Số lượng URLs: ${result.urls?.length || 0}`);
+        
+        // Log từng presigned URL để test
+        if (result.urls && result.urls.length > 0) {
+            console.log(`${typeEmoji} [Get Presigned URLs] Presigned URLs:`);
+            result.urls.forEach((url, index) => {
+                console.log(`${typeEmoji} [Get Presigned URLs]   Chunk ${index + 1}: ${url.substring(0, 100)}...`);
+            });
+        }
+
+        return {
+            success: true,
+            urls: result.urls || [],
+            fileId: result.fileId,
+            totalChunks: result.totalChunks,
+            bucketName: result.bucketName
+        };
+
+    } catch (error) {
+        console.log(`${typeEmoji} [Get Presigned URLs] ❌ Error:`, error.message);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+};
+
+/**
+ * Merge chunks trên server bằng Edge Function (Streaming Merge) - Cho media (image/video)
  * @param {Object} params - Parameters object
  * @param {string} params.fileId - Unique ID của file
  * @param {number} params.totalChunks - Tổng số chunks
