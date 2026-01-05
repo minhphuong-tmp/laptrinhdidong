@@ -5,13 +5,13 @@ import {
     Alert,
     Linking,
     ScrollView,
+    Share,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
     View
 } from 'react-native';
-import * as Sharing from 'expo-sharing';
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
 import { supabaseUrl } from '../../constants';
@@ -128,16 +128,109 @@ const Documents = () => {
             console.log('=== DOWNLOAD DEBUG ===');
             console.log('Document:', document);
             console.log('Document filePath:', document.filePath);
+            
+            // Lấy thông tin document đầy đủ từ database để có uploader_id chính xác
+            const fullDocumentInfo = await documentService.getDocumentById(document.id);
+            let actualUploaderId = null;
+            if (fullDocumentInfo.success && fullDocumentInfo.data) {
+                actualUploaderId = fullDocumentInfo.data.uploaderId;
+                console.log('Full document info from DB:', fullDocumentInfo.data);
+                console.log('Actual uploader_id:', actualUploaderId);
+            }
 
             // Tạo URL download từ Supabase Storage
-            // Bucket là 'upload', path là documents/uploader_id/file_name
-            const fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${document.filePath}`;
-            console.log('Download URL:', fileUrl);
+            // Bucket là 'upload', path có thể là:
+            // - documents/uploader_id/file_name (format mới)
+            // - documents/file_name (format cũ, thiếu uploader_id)
+            let filePath = document.filePath;
+            
+            // Nếu filePath không bắt đầu bằng 'documents/', thêm vào
+            if (!filePath.startsWith('documents/')) {
+                filePath = `documents/${filePath}`;
+            }
+            
+            // Kiểm tra xem filePath có chứa uploader_id không (có 2 dấu / sau documents/)
+            const pathParts = filePath.split('/');
+            let fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${filePath}`;
+            
+            console.log('=== DOWNLOAD URL DEBUG ===');
+            console.log('Supabase URL:', supabaseUrl);
+            console.log('Original filePath:', document.filePath);
+            console.log('Processed filePath:', filePath);
+            console.log('Path parts:', pathParts);
+            console.log('Full download URL:', fileUrl);
+            
+            // Test URL bằng cách fetch HEAD
+            let urlFound = false;
+            try {
+                let testResponse = await fetch(fileUrl, { method: 'HEAD' });
+                console.log('URL test response:', {
+                    status: testResponse.status,
+                    statusText: testResponse.statusText,
+                    contentType: testResponse.headers.get('content-type'),
+                    contentLength: testResponse.headers.get('content-length')
+                });
+                
+                if (testResponse.ok) {
+                    urlFound = true;
+                } else if (testResponse.status === 400 && pathParts.length === 2) {
+                    // Thử các format khác nhau
+                    const fileName = pathParts[1];
+                    const alternatives = [];
+                    
+                    // 1. Thử với uploader_id từ database
+                    if (actualUploaderId) {
+                        alternatives.push(`documents/${actualUploaderId}/${fileName}`);
+                    }
+                    
+                    // 2. Thử với user.id hiện tại
+                    if (user?.id && user.id !== actualUploaderId) {
+                        alternatives.push(`documents/${user.id}/${fileName}`);
+                    }
+                    
+                    // 3. Thử file trực tiếp trong bucket (không có folder documents/)
+                    alternatives.push(fileName);
+                    
+                    // 4. Thử file trực tiếp trong documents/ (đã có)
+                    // alternatives.push(filePath); // Đã thử rồi
+                    
+                    console.log('Thử các URL thay thế:', alternatives);
+                    
+                    for (const altPath of alternatives) {
+                        const alternativeUrl = `${supabaseUrl}/storage/v1/object/public/upload/${altPath}`;
+                        console.log('Thử URL:', alternativeUrl);
+                        
+                        try {
+                            const altResponse = await fetch(alternativeUrl, { method: 'HEAD' });
+                            if (altResponse.ok) {
+                                console.log('✅ URL thay thế thành công:', alternativeUrl);
+                                filePath = altPath;
+                                fileUrl = alternativeUrl;
+                                urlFound = true;
+                                break;
+                            } else {
+                                console.log('❌ URL thay thế lỗi:', altResponse.status);
+                            }
+                        } catch (altError) {
+                            console.log('❌ URL thay thế exception:', altError.message);
+                        }
+                    }
+                }
+                
+                if (!urlFound) {
+                    Alert.alert('Lỗi', `Không thể truy cập file. File có thể không tồn tại hoặc URL không đúng. Vui lòng kiểm tra lại.`);
+                    return;
+                }
+            } catch (urlError) {
+                console.error('URL test error:', urlError);
+                Alert.alert('Lỗi', `Không thể kiểm tra URL: ${urlError.message}`);
+                return;
+            }
 
-            // Lấy tên file từ filePath hoặc title
-            const fileName = document.filePath.split('/').pop() || `${document.title}.${document.type}`;
+            // Lấy tên file từ filePath hoặc title (dùng filePath đã được xử lý)
+            const fileName = filePath.split('/').pop() || `${document.title}.${document.type}`;
 
-            // Download file về local storage
+            // Download file về local storage (dùng fileUrl đã được xử lý/cập nhật)
             const downloadResult = await documentService.downloadDocumentFile(fileUrl, fileName);
 
             if (!downloadResult.success) {
@@ -148,7 +241,46 @@ const Documents = () => {
             // Tăng lượt download sau khi download thành công
             await documentService.incrementDownload(document.id);
 
-            // Hiển thị alert với option mở/share file
+            // Kiểm tra xem có phải video không để lưu vào Media Library
+            const isVideo = document.type === 'mp4' || document.type === 'video' || 
+                          fileName.toLowerCase().endsWith('.mp4') || 
+                          fileName.toLowerCase().endsWith('.mov') ||
+                          fileName.toLowerCase().endsWith('.avi') ||
+                          fileName.toLowerCase().endsWith('.mkv');
+            let mediaLibraryResult = null;
+
+            if (isVideo) {
+                // Tự động lưu video vào Media Library
+                console.log('Saving video to Media Library:', downloadResult.localUri);
+                mediaLibraryResult = await documentService.saveToMediaLibrary(
+                    downloadResult.localUri,
+                    downloadResult.originalFileName,
+                    'video'
+                );
+
+                if (mediaLibraryResult.success) {
+                    const durationInfo = mediaLibraryResult.duration > 0 
+                        ? ` (${Math.floor(mediaLibraryResult.duration)}s)` 
+                        : '';
+                    Alert.alert(
+                        'Tải thành công',
+                        `Video "${document.title}"${durationInfo} đã được tải và lưu vào thư viện. Bạn có thể mở xem bằng ứng dụng video.`,
+                        [{ text: 'OK' }]
+                    );
+                    return;
+                } else {
+                    // Nếu lưu vào Media Library thất bại, vẫn hiển thị option mở file
+                    console.log('Failed to save to Media Library:', mediaLibraryResult.msg);
+                    Alert.alert(
+                        'Tải thành công',
+                        `Video "${document.title}" đã được tải về máy. ${mediaLibraryResult.msg || 'Không thể lưu vào thư viện, nhưng bạn vẫn có thể mở file.'}`,
+                        [{ text: 'OK' }]
+                    );
+                    return;
+                }
+            }
+
+            // Hiển thị alert với option mở/share file (cho file không phải video hoặc lưu Media Library thất bại)
             Alert.alert(
                 'Tải thành công',
                 `Tài liệu "${document.title}" đã được tải về máy.`,
@@ -157,15 +289,19 @@ const Documents = () => {
                         text: 'Mở file',
                         onPress: async () => {
                             try {
-                                const isAvailable = await Sharing.isAvailableAsync();
-                                if (isAvailable) {
-                                    await Sharing.shareAsync(downloadResult.localUri);
-                                } else {
-                                    Alert.alert('Thông báo', 'Chức năng chia sẻ không khả dụng trên thiết bị này.');
-                                }
+                                // Dùng Share từ react-native để mở/share file
+                                await Share.share({
+                                    url: downloadResult.localUri,
+                                    message: `Tài liệu: ${document.title}`
+                                });
                             } catch (error) {
                                 console.error('Error sharing file:', error);
-                                Alert.alert('Lỗi', 'Không thể mở file');
+                                // Fallback: thử mở bằng Linking nếu Share không hoạt động
+                                try {
+                                    await Linking.openURL(downloadResult.localUri);
+                                } catch (linkError) {
+                                    Alert.alert('Lỗi', 'Không thể mở file. File đã được lưu tại: ' + downloadResult.localUri);
+                                }
                             }
                         }
                     },

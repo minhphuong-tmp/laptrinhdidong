@@ -7,8 +7,9 @@
  */
 export const compressVideo = async (videoFile, options = {}) => {
     const {
-        maxWidth = 720, // Giảm xuống 720p để đảm bảo tương thích
-        maxHeight = 1280,
+        maxWidth = 480, // Giảm xuống 480p để tăng tương thích tối đa
+        maxHeight = 854, // 480p portrait (854x480 landscape)
+        forceCompress = true, // Force compress tất cả video để đảm bảo format tương thích
     } = options;
 
     try {
@@ -36,7 +37,8 @@ export const compressVideo = async (videoFile, options = {}) => {
         });
 
         // Kiểm tra xem có cần compress không
-        const needsCompress = width > maxWidth || height > maxHeight;
+        // Nếu forceCompress = true, luôn compress để đảm bảo format tương thích
+        const needsCompress = forceCompress || width > maxWidth || height > maxHeight;
         
         if (!needsCompress) {
             console.log('🎥 [Video Compress] ✅ Video không cần compress (resolution đã phù hợp)');
@@ -47,7 +49,7 @@ export const compressVideo = async (videoFile, options = {}) => {
             };
         }
 
-        console.log('🎥 [Video Compress] ⚠️ Video có resolution cao:', `${width}x${height}`, '→ Compress xuống 720p');
+        console.log('🎥 [Video Compress] ⚠️ Video có resolution:', `${width}x${height}`, '→ Compress xuống 640p để tăng tương thích');
 
         // Tính toán resolution mới (giữ aspect ratio)
         const aspectRatio = width / height;
@@ -64,17 +66,21 @@ export const compressVideo = async (videoFile, options = {}) => {
             newWidth = Math.round(maxHeight * aspectRatio);
         }
 
+        // Đảm bảo resolution là số chẵn (yêu cầu của một số codec)
+        newWidth = newWidth % 2 === 0 ? newWidth : newWidth - 1;
+        newHeight = newHeight % 2 === 0 ? newHeight : newHeight - 1;
+
         console.log('🎥 [Video Compress] Target resolution:', `${newWidth}x${newHeight}`);
 
         // Sử dụng react-native-compressor để compress video
         try {
             const { Video } = require('react-native-compressor');
             
-            console.log('🎥 [Video Compress] Đang compress video...');
+            console.log('🎥 [Video Compress] Đang compress video với settings tối ưu cho tương thích...');
             const compressedUri = await Video.compress(videoUri, {
                 compressionMethod: 'auto',
                 minimumFileSizeForCompression: 0, // Compress tất cả video
-                bitrate: 1000000, // 1Mbps bitrate
+                bitrate: 500000, // Giảm bitrate xuống 500kbps để tăng tương thích tối đa
                 maxSize: {
                     width: newWidth,
                     height: newHeight

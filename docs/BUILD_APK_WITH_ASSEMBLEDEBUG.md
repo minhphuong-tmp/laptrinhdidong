@@ -149,3 +149,5 @@ Nếu vẫn lỗi → Chạy lại `npx expo prebuild --clean` và rebuild.
 
 
 
+
+

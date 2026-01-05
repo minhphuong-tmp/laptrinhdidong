@@ -1779,16 +1779,22 @@ const ChatScreen = () => {
                         type: selectedVideo.type
                     });
                     
-                    // Compress video trước khi upload (nếu cần)
+                    // Compress video để re-encode với format tương thích hơn
+                    // Video gốc từ camera thường là High profile → không tương thích với hardware decoder
+                    // Compression sẽ re-encode với settings tối ưu hơn
                     const { compressVideo } = require('../../services/videoCompressService');
-                    const compressResult = await compressVideo(selectedVideo);
+                    console.log('🎥 [Video Picker] Compressing video để đảm bảo tương thích...');
+                    const compressResult = await compressVideo(selectedVideo, {
+                        forceCompress: true, // Force compress để re-encode tất cả video
+                        maxWidth: 480, // Giảm xuống 480p để tăng tương thích tối đa
+                        maxHeight: 854
+                    });
                     
-                    if (compressResult.success) {
-                        // Sử dụng video đã được xử lý (có thể là video gốc nếu không cần compress)
-                        await sendMediaMessage(compressResult.file || selectedVideo, 'video');
+                    if (compressResult.success && compressResult.needsCompress) {
+                        console.log('🎥 [Video Picker] ✅ Video đã được compress, upload video đã compress');
+                        await sendMediaMessage(compressResult.file, 'video');
                     } else {
-                        // Nếu compress fail, vẫn upload video gốc
-                        console.log('🎥 [Video Picker] ⚠️ Compress video fail, dùng video gốc');
+                        console.log('🎥 [Video Picker] ⚠️ Compress không thành công hoặc không cần, dùng video gốc');
                         await sendMediaMessage(selectedVideo, 'video');
                     }
                     return; // Thoát sớm nếu đã chọn video

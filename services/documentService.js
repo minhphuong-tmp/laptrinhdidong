@@ -1,5 +1,6 @@
 import { decode } from 'base64-arraybuffer';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 import { supabase } from '../lib/supabase';
 import { loadDocumentsCache } from '../utils/cacheHelper';
 
@@ -79,6 +80,7 @@ export const documentService = {
                 size: data.file_size ? `${(data.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
                 uploadDate: new Date(data.upload_date).toLocaleDateString('vi-VN'),
                 uploader: data.uploader?.name || 'N/A',
+                uploaderId: data.uploader_id, // Thêm uploader_id
                 downloads: data.download_count || 0,
                 category: data.category || 'Lý thuyết',
                 description: data.description || '',
@@ -330,10 +332,25 @@ export const documentService = {
     // Download file tài liệu về local storage
     downloadDocumentFile: async (fileUrl, fileName, onProgress = null) => {
         try {
-            // Tạo đường dẫn lưu file trong documentDirectory
-            const documentsDir = FileSystem.documentDirectory;
+            // Kiểm tra FileSystem có sẵn không
+            if (!FileSystem) {
+                console.error('FileSystem is not available');
+                return { success: false, msg: 'FileSystem không khả dụng' };
+            }
+
+            // Tạo đường dẫn lưu file - thử documentDirectory trước, fallback về cacheDirectory
+            let documentsDir = FileSystem.documentDirectory;
+            console.log('FileSystem.documentDirectory:', documentsDir);
+            
             if (!documentsDir) {
-                return { success: false, msg: 'Không thể truy cập thư mục lưu trữ' };
+                documentsDir = FileSystem.cacheDirectory;
+                console.log('FileSystem.cacheDirectory:', documentsDir);
+            }
+            
+            if (!documentsDir) {
+                console.error('FileSystem.documentDirectory and cacheDirectory are both null');
+                console.error('FileSystem object:', FileSystem);
+                return { success: false, msg: 'Không thể truy cập thư mục lưu trữ. Vui lòng kiểm tra quyền truy cập.' };
             }
 
             // Tạo tên file với timestamp để tránh trùng lặp
@@ -344,6 +361,23 @@ export const documentService = {
 
             console.log('Downloading file from:', fileUrl);
             console.log('Saving to:', localFilePath);
+            console.log('Using directory:', documentsDir === FileSystem.documentDirectory ? 'documentDirectory' : 'cacheDirectory');
+
+            // Kiểm tra URL có hợp lệ không bằng cách fetch HEAD request
+            try {
+                const headResponse = await fetch(fileUrl, { method: 'HEAD' });
+                if (!headResponse.ok) {
+                    console.error('URL not accessible:', headResponse.status, headResponse.statusText);
+                    return { success: false, msg: `Không thể truy cập file. Lỗi: ${headResponse.status} ${headResponse.statusText}` };
+                }
+                const contentLength = headResponse.headers.get('content-length');
+                if (contentLength) {
+                    console.log('Expected file size:', contentLength, 'bytes');
+                }
+            } catch (fetchError) {
+                console.warn('Could not check URL with HEAD request:', fetchError.message);
+                // Tiếp tục download dù không check được
+            }
 
             // Download file với progress callback
             const downloadResult = await FileSystem.downloadAsync(
@@ -360,6 +394,36 @@ export const documentService = {
 
             console.log('Download completed:', downloadResult.uri);
 
+            // Kiểm tra file size sau khi download
+            const downloadedFileInfo = await FileSystem.getInfoAsync(downloadResult.uri);
+            console.log('Downloaded file info:', {
+                exists: downloadedFileInfo.exists,
+                size: downloadedFileInfo.size,
+                uri: downloadResult.uri
+            });
+
+            if (!downloadedFileInfo.exists) {
+                return { success: false, msg: 'Download thất bại: File không tồn tại sau khi tải' };
+            }
+
+            if (downloadedFileInfo.size === 0) {
+                return { success: false, msg: 'Download thất bại: File có kích thước 0 byte. Có thể URL không đúng hoặc file không tồn tại.' };
+            }
+
+            // Cảnh báo nếu file quá nhỏ (có thể là HTML error page)
+            if (downloadedFileInfo.size < 100) {
+                console.warn('File size is very small:', downloadedFileInfo.size, 'bytes. May be an error page.');
+                // Đọc một phần file để kiểm tra xem có phải HTML không
+                try {
+                    const fileContent = await FileSystem.readAsStringAsync(downloadResult.uri, { length: 100 });
+                    if (fileContent.includes('<html') || fileContent.includes('<!DOCTYPE')) {
+                        return { success: false, msg: 'Download thất bại: URL trả về trang lỗi thay vì file. Vui lòng kiểm tra lại URL.' };
+                    }
+                } catch (readError) {
+                    console.warn('Could not read file to check:', readError.message);
+                }
+            }
+
             return {
                 success: true,
                 localUri: downloadResult.uri,
@@ -368,7 +432,89 @@ export const documentService = {
             };
         } catch (error) {
             console.error('Error downloading document file:', error);
-            return { success: false, msg: `Lỗi khi tải file: ${error.message}` };
+            console.error('Error details:', JSON.stringify(error, null, 2));
+            return { success: false, msg: `Lỗi khi tải file: ${error.message || 'Unknown error'}` };
+        }
+    },
+
+    // Lưu file vào Media Library (để có thể mở bằng ứng dụng khác)
+    saveToMediaLibrary: async (fileUri, fileName, fileType = 'video') => {
+        try {
+            // Request permissions
+            const { status } = await MediaLibrary.requestPermissionsAsync();
+            if (status !== 'granted') {
+                return { 
+                    success: false, 
+                    msg: 'Cần quyền truy cập thư viện để lưu file. Vui lòng cấp quyền trong Cài đặt.' 
+                };
+            }
+
+            // Kiểm tra xem file có tồn tại không và có size > 0
+            const fileInfo = await FileSystem.getInfoAsync(fileUri);
+            if (!fileInfo.exists) {
+                return { success: false, msg: 'File không tồn tại' };
+            }
+
+            if (fileInfo.size === 0) {
+                return { success: false, msg: 'File có kích thước 0 byte, không thể lưu' };
+            }
+
+            console.log('File info before saving:', {
+                uri: fileUri,
+                exists: fileInfo.exists,
+                size: fileInfo.size,
+                fileName: fileName
+            });
+
+            // Đợi một chút để đảm bảo file đã được ghi hoàn toàn
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Kiểm tra lại file size sau khi đợi
+            const fileInfoAfterWait = await FileSystem.getInfoAsync(fileUri);
+            if (fileInfoAfterWait.size === 0) {
+                return { success: false, msg: 'File có kích thước 0 byte sau khi tải, vui lòng thử lại' };
+            }
+
+            console.log('File info after wait:', {
+                size: fileInfoAfterWait.size,
+                sizeBefore: fileInfo.size
+            });
+
+            // Lưu vào Media Library
+            // createAssetAsync sẽ tự động xử lý metadata cho video
+            const asset = await MediaLibrary.createAssetAsync(fileUri);
+
+            if (!asset || !asset.id) {
+                return { success: false, msg: 'Không thể tạo asset trong Media Library' };
+            }
+
+            console.log('File saved to Media Library:', {
+                id: asset.id,
+                uri: asset.uri,
+                filename: asset.filename,
+                mediaType: asset.mediaType,
+                duration: asset.duration,
+                width: asset.width,
+                height: asset.height
+            });
+
+            // Kiểm tra xem asset có metadata đầy đủ không
+            if (fileType === 'video' && asset.duration === 0) {
+                console.warn('Video saved but duration is 0, may need time to process');
+            }
+
+            return {
+                success: true,
+                assetUri: asset.uri,
+                id: asset.id,
+                duration: asset.duration,
+                width: asset.width,
+                height: asset.height
+            };
+        } catch (error) {
+            console.error('Error saving to Media Library:', error);
+            console.error('Error details:', JSON.stringify(error, null, 2));
+            return { success: false, msg: `Lỗi khi lưu vào thư viện: ${error.message || 'Unknown error'}` };
         }
     }
 };
