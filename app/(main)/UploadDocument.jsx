@@ -169,10 +169,10 @@ const UploadDocument = () => {
                 file_size: fileSize,
                 file_path: uploadResult.data, // Đường dẫn từ upload (sẽ được update sau khi merge xong nếu là chunk upload)
                 tags: tagsArray,
-                is_public: isPublic
+                is_public: isPublic,
+                processing_status: uploadResult.isChunked ? 'processing' : 'completed' // Set processing status nếu là chunk upload
             };
 
-            console.log('Creating document record:', documentData);
             const createResult = await documentService.addDocument(documentData);
 
             if (!createResult.success) {

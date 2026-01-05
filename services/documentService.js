@@ -1,16 +1,13 @@
-import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import RNBlobUtil from 'react-native-blob-util';
 import { supabase } from '../lib/supabase';
 import { loadDocumentsCache } from '../utils/cacheHelper';
-import { 
-    getFileBlob, 
-    uploadChunksParallel, 
-    mergeDocumentChunksOnServer,
-    getPresignedUrlsForChunks,
+import {
+    CHUNK_UPLOAD_THRESHOLD,
     getPresignedUrlForSingleFile,
-    CHUNK_UPLOAD_THRESHOLD 
+    mergeDocumentChunksOnServer,
+    uploadChunksParallel
 } from './chunkService';
 
 export const documentService = {
@@ -57,7 +54,8 @@ export const documentService = {
                         description: doc.description || '',
                         filePath: doc.file_path,
                         rating: doc.rating || 0,
-                        tags: doc.tags || []
+                        tags: doc.tags || [],
+                        isProcessing: doc.processing_status === 'processing'
                     };
                 } catch (transformError) {
                     console.log('Error transforming document:', doc.id, transformError);
@@ -105,7 +103,8 @@ export const documentService = {
                 description: data.description || '',
                 filePath: data.file_path,
                 rating: data.rating || 0,
-                tags: data.tags || []
+                tags: data.tags || [],
+                isProcessing: data.processing_status === 'processing'
             };
 
             return { success: true, data: transformedData };
@@ -167,14 +166,11 @@ export const documentService = {
                 }
 
                 // Upload chunks thành công - return ngay (không đợi merge)
-                console.log(`📄 [Document Upload] ✅ Tất cả chunks upload thành công! (${uploadResult.uploadedChunks.length} chunks)`);
-                
                 // Tạo đường dẫn cuối cùng
                 const finalPath = `documents/${uploaderId}/${fileName}`;
                 
                 // Gọi merge ở background (KHÔNG await - fire and forget hoàn toàn)
                 const totalChunks = uploadResult.uploadedChunks.length;
-                console.log(`📄 [Document Upload] Sẽ merge ${totalChunks} chunks ở background (không block UI)...`);
                 
                 // Merge ở background (fire and forget - KHÔNG có progress callback để không block UI)
                 mergeDocumentChunksOnServer({
@@ -338,7 +334,8 @@ export const documentService = {
                     download_count: 0,
                     rating: 0,
                     tags: documentData.tags || [],
-                    is_public: documentData.is_public !== false
+                    is_public: documentData.is_public !== false,
+                    processing_status: documentData.processing_status || 'completed'
                 })
                 .select()
                 .single();
@@ -391,6 +388,7 @@ export const documentService = {
                 .from('documents')
                 .update({
                     file_path: filePath,
+                    processing_status: 'completed',
                     updated_at: new Date().toISOString()
                 })
                 .eq('id', documentId)
@@ -402,7 +400,7 @@ export const documentService = {
                 return { success: false, msg: error.message };
             }
 
-            console.log('📄 [Document Upload] ✅ Updated document file_path:', filePath);
+            console.log('📄 [Document Upload] ✅ Updated document file_path và processing_status:', filePath);
             return { success: true, data };
         } catch (error) {
             console.log('Error in updateDocumentFilePath:', error);

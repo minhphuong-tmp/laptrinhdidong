@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -39,6 +39,14 @@ const Documents = () => {
     useEffect(() => {
         loadDocuments();
     }, []);
+
+    // Refresh khi quay về từ UploadDocument
+    useFocusEffect(
+        useCallback(() => {
+            // Force refresh khi quay về, không dùng cache để đảm bảo document mới xuất hiện ngay
+            loadDocuments(false);
+        }, [])
+    );
 
     const loadDocuments = async (useCache = true) => {
         setLoading(true);
@@ -93,28 +101,78 @@ const Documents = () => {
 
     const handlePreview = async (document) => {
         try {
+            // Nếu document đang processing, fetch lại từ DB để check status mới nhất
+            if (document.isProcessing) {
+                const freshDocument = await documentService.getDocumentById(document.id);
+                if (freshDocument.success && freshDocument.data) {
+                    // Nếu vẫn đang processing, hiển thị Alert
+                    if (freshDocument.data.isProcessing) {
+                        Alert.alert(
+                            'Server đang xử lý',
+                            'File đang được xử lý ở server. Vui lòng thử lại sau.',
+                            [{ text: 'OK', style: 'default' }]
+                        );
+                        return;
+                    }
+                    // Nếu đã completed, update document trong state và tiếp tục preview
+                    document = freshDocument.data;
+                    // Update document trong state để UI refresh (dùng functional update)
+                    setDocuments(prevDocuments => {
+                        const updatedDocuments = prevDocuments.map(doc => 
+                            doc.id === document.id ? document : doc
+                        );
+                        // Update filteredDocuments với documents mới
+                        let filtered = updatedDocuments;
+                        if (searchText.trim() !== '') {
+                            filtered = filtered.filter(doc =>
+                                doc.title.toLowerCase().includes(searchText.toLowerCase()) ||
+                                doc.category.toLowerCase().includes(searchText.toLowerCase()) ||
+                                doc.type.toLowerCase().includes(searchText.toLowerCase())
+                            );
+                        }
+                        if (selectedCategory !== 'Tất cả') {
+                            filtered = filtered.filter(doc => doc.category === selectedCategory);
+                        }
+                        setFilteredDocuments(filtered);
+                        return updatedDocuments;
+                    });
+                } else {
+                    // Không fetch được, vẫn hiển thị Alert
+                    Alert.alert(
+                        'Server đang xử lý',
+                        'File đang được xử lý ở server. Vui lòng thử lại sau.',
+                        [{ text: 'OK', style: 'default' }]
+                    );
+                    return;
+                }
+            }
+
             console.log('=== PREVIEW DEBUG ===');
             console.log('Document:', document);
             console.log('Document filePath:', document.filePath);
 
             // Tạo URL preview từ Supabase Storage
-            // Bucket là 'upload', path là documents/uploader_id/file_name
-            const fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${document.filePath}`;
+            // Bucket là 'media' (documents được upload vào bucket media)
+            const fileUrl = `${supabaseUrl}/storage/v1/object/public/media/${document.filePath}`;
             console.log('Preview URL:', fileUrl);
 
-            // Mở URL trong browser để preview
-            const canOpen = await Linking.canOpenURL(fileUrl);
-            console.log('Can open URL:', canOpen);
+            // Dùng Google Docs Viewer để preview PDF trong browser (không tải về)
+            // Google Docs Viewer sẽ hiển thị PDF trực tiếp trong browser
+            const previewUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(fileUrl)}&embedded=true`;
+            console.log('Google Docs Viewer URL:', previewUrl);
 
-            if (canOpen) {
-                await Linking.openURL(fileUrl);
-                Alert.alert(
-                    'Đang mở tài liệu',
-                    'Tài liệu đang được mở trong trình duyệt.',
-                    [{ text: 'OK', style: 'default' }]
-                );
-            } else {
-                Alert.alert('Lỗi', 'Không thể mở tài liệu');
+            // Mở URL trong browser để preview
+            try {
+                const supported = await Linking.canOpenURL(previewUrl);
+                if (supported) {
+                    await Linking.openURL(previewUrl);
+                    // Browser sẽ mở Google Docs Viewer để preview PDF
+                } else {
+                    Alert.alert('Lỗi', 'Không thể mở tài liệu trong trình duyệt');
+                }
+            } catch (error) {
+                console.error('Error opening URL:', error);
+                Alert.alert('Lỗi', `Không thể mở tài liệu: ${error.message}`);
             }
 
         } catch (error) {
@@ -125,6 +183,52 @@ const Documents = () => {
 
     const handleDownload = async (document) => {
         try {
+            // Nếu document đang processing, fetch lại từ DB để check status mới nhất
+            if (document.isProcessing) {
+                const freshDocument = await documentService.getDocumentById(document.id);
+                if (freshDocument.success && freshDocument.data) {
+                    // Nếu vẫn đang processing, hiển thị Alert
+                    if (freshDocument.data.isProcessing) {
+                        Alert.alert(
+                            'Server đang xử lý',
+                            'File đang được xử lý ở server. Vui lòng thử lại sau.',
+                            [{ text: 'OK', style: 'default' }]
+                        );
+                        return;
+                    }
+                    // Nếu đã completed, update document trong state và tiếp tục download
+                    document = freshDocument.data;
+                    // Update document trong state để UI refresh (dùng functional update)
+                    setDocuments(prevDocuments => {
+                        const updatedDocuments = prevDocuments.map(doc => 
+                            doc.id === document.id ? document : doc
+                        );
+                        // Update filteredDocuments với documents mới
+                        let filtered = updatedDocuments;
+                        if (searchText.trim() !== '') {
+                            filtered = filtered.filter(doc =>
+                                doc.title.toLowerCase().includes(searchText.toLowerCase()) ||
+                                doc.category.toLowerCase().includes(searchText.toLowerCase()) ||
+                                doc.type.toLowerCase().includes(searchText.toLowerCase())
+                            );
+                        }
+                        if (selectedCategory !== 'Tất cả') {
+                            filtered = filtered.filter(doc => doc.category === selectedCategory);
+                        }
+                        setFilteredDocuments(filtered);
+                        return updatedDocuments;
+                    });
+                } else {
+                    // Không fetch được, vẫn hiển thị Alert
+                    Alert.alert(
+                        'Server đang xử lý',
+                        'File đang được xử lý ở server. Vui lòng thử lại sau.',
+                        [{ text: 'OK', style: 'default' }]
+                    );
+                    return;
+                }
+            }
+
             console.log('=== DOWNLOAD DEBUG ===');
             console.log('Document:', document);
             console.log('Document filePath:', document.filePath);
@@ -139,7 +243,8 @@ const Documents = () => {
             }
 
             // Tạo URL download từ Supabase Storage
-            // Bucket là 'upload', path có thể là:
+            // Bucket là 'media' (documents được upload vào bucket media)
+            // Path có thể là:
             // - documents/uploader_id/file_name (format mới)
             // - documents/file_name (format cũ, thiếu uploader_id)
             let filePath = document.filePath;
@@ -151,7 +256,7 @@ const Documents = () => {
             
             // Kiểm tra xem filePath có chứa uploader_id không (có 2 dấu / sau documents/)
             const pathParts = filePath.split('/');
-            let fileUrl = `${supabaseUrl}/storage/v1/object/public/upload/${filePath}`;
+            let fileUrl = `${supabaseUrl}/storage/v1/object/public/media/${filePath}`;
             
             console.log('=== DOWNLOAD URL DEBUG ===');
             console.log('Supabase URL:', supabaseUrl);
@@ -197,7 +302,7 @@ const Documents = () => {
                     console.log('Thử các URL thay thế:', alternatives);
                     
                     for (const altPath of alternatives) {
-                        const alternativeUrl = `${supabaseUrl}/storage/v1/object/public/upload/${altPath}`;
+                        const alternativeUrl = `${supabaseUrl}/storage/v1/object/public/media/${altPath}`;
                         console.log('Thử URL:', alternativeUrl);
                         
                         try {
