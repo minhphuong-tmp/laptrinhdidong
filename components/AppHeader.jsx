@@ -17,7 +17,17 @@ const AppHeader = ({ notificationCount, unreadMessagesCount = 0, onNotificationP
                 {showBackButton && (
                     <TouchableOpacity
                         style={styles.backButton}
-                        onPress={() => router.back()}
+                        onPress={() => {
+                            try {
+                                if (router.canGoBack()) {
+                                    router.back();
+                                } else {
+                                    router.replace('/(main)/home');
+                                }
+                            } catch (error) {
+                                router.replace('/(main)/home');
+                            }
+                        }}
                     >
                         <Icon name="arrowLeft" size={hp(2.5)} color={theme.colors.text} />
                     </TouchableOpacity>

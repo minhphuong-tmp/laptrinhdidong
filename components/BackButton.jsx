@@ -1,10 +1,22 @@
-import { Pressable, StyleSheet } from 'react-native'
-import Icon from '../assets/icons'
-import { theme } from '../constants/theme'
+import { Pressable, StyleSheet } from 'react-native';
+import Icon from '../assets/icons';
+import { theme } from '../constants/theme';
 
 const BackButton = ({ size = 26, router }) => {
+    const handleBack = () => {
+        try {
+            if (router?.canGoBack && router.canGoBack()) {
+                router.back();
+            } else {
+                router.replace('/(main)/home');
+            }
+        } catch (error) {
+            router.replace('/(main)/home');
+        }
+    };
+
     return (
-        <Pressable onPress={() => router.back()} style={styles.button}>
+        <Pressable onPress={handleBack} style={styles.button}>
             <Icon name="arrowLeft" strokeWidth={2.5} size={size} color={theme.colors.text}></Icon>
         </Pressable>
     )

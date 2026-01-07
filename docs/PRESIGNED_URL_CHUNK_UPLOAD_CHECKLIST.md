@@ -225,3 +225,7 @@ Chuyển từ `supabase.storage.upload()` sang Presigned URL + PUT trực tiếp
 - **Test kỹ** với mạng thực tế để verify performance
 - **Backup** code cũ để rollback nếu cần
 
+
+
+
+

@@ -1,14 +1,14 @@
+import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
-import RNBlobUtil from 'react-native-blob-util';
 import { supabase } from '../lib/supabase';
 import { loadDocumentsCache } from '../utils/cacheHelper';
-import {
-    CHUNK_UPLOAD_THRESHOLD,
-    getPresignedUrlForSingleFile,
-    mergeDocumentChunksOnServer,
-    uploadChunksParallel
+import { supabaseUrl } from '../constants/index';
+import { 
+    CHUNK_UPLOAD_THRESHOLD, 
+    uploadChunksParallel 
 } from './chunkService';
+import uploadResumeService from './uploadResumeService';
 
 export const documentService = {
     // Lấy tất cả tài liệu
@@ -33,35 +33,25 @@ export const documentService = {
 
             if (error) {
                 console.log('Error fetching documents:', error);
-                console.log('Error details:', JSON.stringify(error, null, 2));
-                return { success: false, msg: error.message || `error code: ${error.code || 'unknown'}`, data: [] };
+                return { success: false, msg: error.message, data: [] };
             }
 
             // Transform data để match với UI
-            const transformedData = (data || []).map(doc => {
-                try {
-                    // Xử lý upload_date: có thể là upload_date hoặc created_at
-                    const uploadDate = doc.upload_date || doc.created_at;
-                    return {
-                        id: doc.id,
-                        title: doc.title,
-                        type: doc.file_type || 'pdf',
-                        size: doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
-                        uploadDate: uploadDate ? new Date(uploadDate).toLocaleDateString('vi-VN') : 'N/A',
-                        uploader: doc.uploader?.name || 'N/A',
-                        downloads: doc.download_count || 0,
-                        category: doc.category || 'Lý thuyết',
-                        description: doc.description || '',
-                        filePath: doc.file_path,
-                        rating: doc.rating || 0,
-                        tags: doc.tags || [],
-                        isProcessing: doc.processing_status === 'processing'
-                    };
-                } catch (transformError) {
-                    console.log('Error transforming document:', doc.id, transformError);
-                    return null;
-                }
-            }).filter(doc => doc !== null); // Loại bỏ các document transform fail
+            const transformedData = data.map(doc => ({
+                id: doc.id,
+                title: doc.title,
+                type: doc.file_type || 'pdf',
+                size: doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
+                uploadDate: new Date(doc.upload_date).toLocaleDateString('vi-VN'),
+                uploader: doc.uploader?.name || 'N/A',
+                downloads: doc.download_count || 0,
+                category: doc.category || 'Lý thuyết',
+                description: doc.description || '',
+                filePath: doc.file_path,
+                rating: doc.rating || 0,
+                tags: doc.tags || [],
+                processingStatus: doc.processing_status || 'completed' // Thêm processing_status
+            }));
 
             // Removed: Không tự động cache ở đây, chỉ cache khi prefetch
             // Cache chỉ được tạo trong prefetchService.js
@@ -103,8 +93,7 @@ export const documentService = {
                 description: data.description || '',
                 filePath: data.file_path,
                 rating: data.rating || 0,
-                tags: data.tags || [],
-                isProcessing: data.processing_status === 'processing'
+                tags: data.tags || []
             };
 
             return { success: true, data: transformedData };
@@ -114,201 +103,343 @@ export const documentService = {
         }
     },
 
-    // Upload file tài liệu lên Supabase Storage (với chunk upload cho file lớn)
+    // Upload file tài liệu lên Supabase Storage (hỗ trợ chunk upload cho file > 5MB)
     uploadDocumentFile: async (fileUri, uploaderId, fileName, fileSize = 0, onProgress = null, onMergeComplete = null) => {
         try {
-            // Documents dùng bucket "media" (cùng bucket với images/videos, phân biệt bằng folder path)
-            const bucketName = 'media';
-            const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-            
-            console.log('📄 [Document Upload] Bắt đầu upload tài liệu:', fileName);
-            console.log(`📄 [Document Upload] File size: ${fileSizeMB} MB (${fileSize} bytes)`);
-            console.log(`📄 [Document Upload] Using bucket: ${bucketName}`);
 
-            // Validate onProgress callback
-            const progressCallback = typeof onProgress === 'function' ? onProgress : null;
+            // Tạo đường dẫn: documents/<uploader_id>/<file_name>
+            const filePath = `documents/${uploaderId}/${fileName}`;
+            const bucketName = 'media'; // Documents dùng bucket 'media' (cùng với images/videos)
 
-            // Check file size để quyết định upload method
+            // Kiểm tra file size để quyết định upload method
             if (fileSize >= CHUNK_UPLOAD_THRESHOLD) {
-                // File >= 5MB: Chia chunks và upload song song
-                console.log('📄 [Document Upload] File >= 5MB, sẽ dùng chunk upload');
+                // File >= 5MB: Dùng chunk upload
 
                 // Tạo fileId unique cho folder chunks
                 const fileId = `${Date.now()}_${Math.random().toString(36).substring(2)}`;
-                console.log(`📄 [Document Upload] File ID: ${fileId}`);
 
-                // Upload chunks song song với presigned URLs (tự động lấy presigned URLs trong uploadChunksParallel)
+                // Tính toán số chunks
+                const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
+                const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+
+                // Lưu upload state vào AsyncStorage (để resume nếu user thoát app)
+                // Metadata sẽ được truyền từ UploadDocument.jsx qua onMergeComplete callback
+                await uploadResumeService.saveChunkUploadState({
+                    fileId: fileId,
+                    fileUri: fileUri,
+                    fileSize: fileSize,
+                    fileName: fileName,
+                    uploaderId: uploaderId,
+                    totalChunks: totalChunks,
+                    uploadedChunks: [], // Chưa upload chunk nào
+                    finalPath: filePath,
+                    metadata: {} // Sẽ được update sau khi tạo document record
+                });
+
+                // MIME type mặc định cho documents
+                const mimeType = 'application/octet-stream';
+
+                // Upload chunks song song
                 const uploadResult = await uploadChunksParallel({
                     fileUri: fileUri,
                     fileId: fileId,
                     fileSize: fileSize,
-                    mimeType: 'application/octet-stream',
-                    fileType: 'document', // Để phân biệt với image/video
-                    bucketName: bucketName, // Documents dùng bucket "media" (cùng với images/videos)
-                    onProgress: (progress) => {
-                        // Update progress (0-80% cho upload chunks)
-                        if (progressCallback) {
-                            try {
-                                progressCallback(progress);
-                            } catch (progressError) {
-                                console.log('📄 [Document Upload] ⚠️ Progress callback error:', progressError.message);
-                            }
-                        }
+                    mimeType: mimeType,
+                    fileType: null, // Documents không có thumbnail preview
+                    onProgress: onProgress,
+                    // Callback khi mỗi chunk upload xong để update state ngay
+                    onChunkUploaded: async (uploadedChunk) => {
+                        await uploadResumeService.updateUploadedChunks([uploadedChunk]);
                     }
                 });
 
                 if (!uploadResult.success) {
-                    console.log(`📄 [Document Upload] ❌ Upload chunks fail: ${uploadResult.error}`);
+                    console.log('📄 [Document Upload] ❌ Chunk upload failed:', uploadResult.error);
+                    // Giữ lại state để retry sau
                     return { 
                         success: false, 
-                        msg: 'Không thể tải lên tài liệu: ' + uploadResult.error 
+                        msg: uploadResult.error || 'Không thể tải lên file',
+                        isChunked: true
                     };
                 }
 
-                // Upload chunks thành công - return ngay (không đợi merge)
-                // Tạo đường dẫn cuối cùng
-                const finalPath = `documents/${uploaderId}/${fileName}`;
-                
-                // Gọi merge ở background (KHÔNG await - fire and forget hoàn toàn)
-                const totalChunks = uploadResult.uploadedChunks.length;
-                
-                // Merge ở background (fire and forget - KHÔNG có progress callback để không block UI)
-                mergeDocumentChunksOnServer({
+                // Update state với chunks đã upload
+                await uploadResumeService.updateUploadedChunks(uploadResult.uploadedChunks);
+
+                // Merge chunks trên server
+                const mergeResult = await documentService.mergeDocumentChunksOnServer({
                     fileId: fileId,
-                    totalChunks: totalChunks,
-                    finalPath: finalPath,
-                    bucketName: bucketName,
-                    onProgress: null // Không gọi progress callback để không block UI
-                }).then((mergeResult) => {
-                    if (mergeResult.success) {
-                        console.log(`📄 [Document Upload] ✅ Merge thành công ở background: ${mergeResult.fileUrl}`);
-                        // Gọi callback nếu có (để update document record)
-                        if (onMergeComplete && typeof onMergeComplete === 'function') {
-                            try {
-                                onMergeComplete(mergeResult.fileUrl, finalPath);
-                            } catch (callbackError) {
-                                console.log('📄 [Document Upload] ⚠️ onMergeComplete callback error:', callbackError.message);
-                            }
-                        }
-                    } else {
-                        console.log(`📄 [Document Upload] ❌ Merge fail ở background: ${mergeResult.error}`);
-                    }
-                }).catch((error) => {
-                    console.log('📄 [Document Upload] ❌ Merge error ở background:', error.message);
+                    totalChunks: uploadResult.uploadedChunks.length,
+                    finalPath: filePath,
+                    onProgress: onProgress
                 });
 
-                // Return ngay với file_path tạm thời (chunks path) hoặc final path
-                // Người dùng có thể tiếp tục dùng app
+                if (!mergeResult.success) {
+                    console.log('📄 [Document Upload] ❌ Merge failed:', mergeResult.error);
+                    // Giữ lại state để retry merge sau
+                    return { 
+                        success: false, 
+                        msg: mergeResult.error || 'Không thể merge chunks',
+                        isChunked: true
+                    };
+                }
+
+                // Gọi callback khi merge xong
+                if (onMergeComplete && typeof onMergeComplete === 'function') {
+                    try {
+                        await onMergeComplete(mergeResult.publicUrl, mergeResult.fileUrl);
+                    } catch (callbackError) {
+                        console.log('📄 [Document Upload] ⚠️ Merge complete callback error:', callbackError.message);
+                    }
+                }
+
+                // Clear upload state vì đã upload xong
+                await uploadResumeService.clearUploadState();
+
                 return { 
                     success: true, 
-                    data: finalPath, // Trả về final path (sẽ có sau khi merge xong)
-                    isChunked: true,
-                    fileId: fileId,
-                    totalChunks: totalChunks
+                    data: mergeResult.fileUrl,
+                    isChunked: true
                 };
             } else {
-                // File < 5MB: Upload với presigned URL dùng react-native-blob-util
-                // ✅ GIẢI PHÁP: react-native-blob-util không dùng Transfer-Encoding: chunked
-                // Gửi Content-Length thật → S3 proxy CHẤP NHẬN
-                console.log('📄 [Document Upload] File < 5MB, upload với presigned URL (RNBlobUtil)');
+                // File < 5MB: Upload trực tiếp (dùng binary, không base64)
+                console.log('📄 [Document Upload] File < 5MB, upload trực tiếp');
 
-                // Tạo đường dẫn: documents/<uploader_id>/<file_name>
-                const filePath = `documents/${uploaderId}/${fileName}`;
-                const fileId = `single_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-
-                console.log('📄 [Document Upload] Uploading to bucket:', bucketName, 'with path:', filePath);
-
-                // Update progress 30% (đang lấy presigned URL)
-                if (progressCallback) {
-                    try {
-                        progressCallback(30);
-                    } catch (progressError) {
-                        // Ignore
-                    }
-                }
-
-                // 1. Lấy presigned URL cho single file
-                const presignedResult = await getPresignedUrlForSingleFile({
-                    fileId: fileId,
-                    filePath: filePath,
-                    bucketName: bucketName
-                });
-
-                if (!presignedResult.success || !presignedResult.url) {
-                    console.log('📄 [Document Upload] ❌ Không thể lấy presigned URL:', presignedResult.error);
-                    return { success: false, msg: 'Không thể lấy presigned URL: ' + presignedResult.error };
-                }
-
-                const presignedUrl = presignedResult.url;
-                console.log('📄 [Document Upload] ✅ Lấy presigned URL thành công');
-
-                // Update progress 50% (đang upload)
-                if (progressCallback) {
-                    try {
-                        progressCallback(50);
-                    } catch (progressError) {
-                        // Ignore
-                    }
-                }
-
-                // 2. Upload với presigned URL dùng react-native-blob-util
-                // ✅ RNBlobUtil.fetch() - không dùng Transfer-Encoding: chunked, gửi Content-Length thật
-                console.log('📄 [Document Upload] Bắt đầu upload với presigned URL (RNBlobUtil)...');
+                // Load file thành Blob (binary, không base64)
+                const response = await fetch(fileUri);
+                const blob = await response.blob();
                 
-                const uploadStartTime = Date.now();
-                
+                // Convert Blob thành Uint8Array (React Native không hỗ trợ blob.arrayBuffer())
+                let fileData;
                 try {
-                    // RNBlobUtil.fetch() upload trực tiếp từ fileUri
-                    // ✅ GIẢI PHÁP: KHÔNG set headers gì cả
-                    // Presigned URL chỉ ký host header → RNBlobUtil muốn thêm headers gì cứ để nó thêm
-                    const uploadResponse = await RNBlobUtil.fetch(
-                        'PUT',
-                        presignedUrl,
-                        {},  // ✅ Để trống - KHÔNG set headers gì cả
-                        RNBlobUtil.wrap(fileUri) // Wrap fileUri để upload trực tiếp từ file
-                    );
-
-                    const uploadTime = Date.now() - uploadStartTime;
-                    const status = uploadResponse.info().status;
-
-                    if (status < 200 || status >= 300) {
-                        let errorMessage = `HTTP ${status}`;
-                        try {
-                            const responseText = await uploadResponse.text();
-                            if (responseText) {
-                                errorMessage = responseText;
-                            }
-                        } catch (e) {
-                            // Ignore
-                        }
-                        console.log('📄 [Document Upload] ❌ Upload error:', errorMessage);
-                        return { success: false, msg: 'Không thể tải lên tài liệu: ' + errorMessage };
+                    if (typeof FileReader !== 'undefined') {
+                        // Browser/Web: Dùng FileReader
+                        fileData = await new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                                const arrayBuffer = reader.result;
+                                resolve(new Uint8Array(arrayBuffer));
+                            };
+                            reader.onerror = reject;
+                            reader.readAsArrayBuffer(blob);
+                        });
+                    } else {
+                        // React Native: Dùng fetch để convert Blob → Response → ArrayBuffer → Uint8Array
+                        const blobResponse = await fetch(blob);
+                        const arrayBuffer = await blobResponse.arrayBuffer();
+                        fileData = new Uint8Array(arrayBuffer);
                     }
-
-                    // Update progress 100% (upload xong)
-                    if (progressCallback) {
-                        try {
-                            progressCallback(100);
-                        } catch (progressError) {
-                            // Ignore
-                        }
-                    }
-
-                    console.log(`📄 [Document Upload] ✅ Upload thành công với presigned URL (RNBlobUtil)! (${(uploadTime / 1000).toFixed(2)}s)`);
+                } catch (convertError) {
+                    console.log('📄 [Document Upload] ❌ Không thể convert Blob:', convertError);
                     return { 
-                        success: true, 
-                        data: filePath,
-                        isChunked: false,
-                        usedPresignedUrl: true
+                        success: false, 
+                        msg: `Không thể đọc file: ${convertError.message}` 
                     };
-                } catch (error) {
-                    console.log('📄 [Document Upload] ❌ Upload error:', error);
-                    return { success: false, msg: 'Không thể tải lên tài liệu: ' + (error.message || String(error)) };
                 }
+
+                // Update progress nếu có callback
+                if (onProgress && typeof onProgress === 'function') {
+                    try {
+                        onProgress(50); // 50% - đã load file
+                    } catch (e) {}
+                }
+
+                const { data, error } = await supabase
+                    .storage
+                    .from(bucketName)
+                    .upload(filePath, fileData, {
+                        cacheControl: '3600',
+                        upsert: false,
+                        contentType: 'application/octet-stream'
+                    });
+
+                if (error) {
+                    console.log('📄 [Document Upload] ❌ Upload error:', error);
+                    return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
+                }
+
+                // Update progress 100%
+                if (onProgress && typeof onProgress === 'function') {
+                    try {
+                        onProgress(100);
+                    } catch (e) {}
+                }
+
+                return { 
+                    success: true, 
+                    data: data.path,
+                    isChunked: false
+                };
             }
         } catch (error) {
-            console.log('📄 [Document Upload] ❌ Upload error:', error);
+            console.log('📄 [Document Upload] ❌ Error:', error);
             return { success: false, msg: 'Không thể tải lên tài liệu: ' + error.message };
+        }
+    },
+
+    // Merge document chunks trên server bằng Edge Function
+    mergeDocumentChunksOnServer: async ({
+        fileId,
+        totalChunks,
+        finalPath,
+        onProgress = null
+    }) => {
+        const startTime = Date.now();
+
+
+        // Validate onProgress callback
+        const progressCallback = typeof onProgress === 'function' ? onProgress : null;
+
+        try {
+            // Update progress 80% (bắt đầu merge)
+            if (progressCallback) {
+                try {
+                    progressCallback(80);
+                } catch (progressError) {
+                    console.log(`${typeEmoji} [Merge Document Chunks] ⚠️ Progress callback error:`, progressError.message);
+                }
+            }
+
+            // Lấy session để có Authorization header
+            const { data: { session } } = await supabase.auth.getSession();
+            const authToken = session?.access_token;
+
+            // Gọi Edge Function merge-document-chunks
+            const edgeFunctionUrl = `${supabaseUrl}/functions/v1/merge-document-chunks`;
+            console.log(`[Merge Document Chunks] Calling Edge Function: ${edgeFunctionUrl}`);
+
+            const mergeStartTime = Date.now();
+            const headers = {
+                'Content-Type': 'application/json',
+            };
+
+            // Thêm Authorization header nếu có token
+            if (authToken) {
+                headers['Authorization'] = `Bearer ${authToken}`;
+            }
+
+            // Gọi Edge Function với timeout (5 phút cho file lớn)
+            const fetchPromise = fetch(edgeFunctionUrl, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    fileId: fileId,
+                    totalChunks: totalChunks,
+                    finalPath: finalPath
+                })
+            });
+
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Merge timeout: Edge Function không phản hồi sau 5 phút')), 300000); // 5 phút
+            });
+
+            const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+            if (!response.ok) {
+                let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.message || errorData.error || errorMessage;
+                } catch (e) {
+                    // Nếu không parse được JSON, dùng status text
+                    const text = await response.text().catch(() => '');
+                    if (text) {
+                        errorMessage = text;
+                    }
+                }
+
+                // Kiểm tra nếu function chưa được deploy
+                if (response.status === 404) {
+                    throw new Error(`Edge Function 'merge-document-chunks' chưa được deploy. Vui lòng deploy function trước khi sử dụng.`);
+                }
+
+                throw new Error(errorMessage);
+            }
+
+            const result = await response.json();
+            const mergeTime = Date.now() - mergeStartTime;
+
+            if (!result.success) {
+                throw new Error(result.error || 'Merge failed on server');
+            }
+
+            // Update progress 100% (merge xong)
+            if (progressCallback) {
+                try {
+                    progressCallback(100);
+                } catch (progressError) {
+                    console.log(`${typeEmoji} [Merge Document Chunks] ⚠️ Progress callback error:`, progressError.message);
+                }
+            }
+
+            const totalTime = Date.now() - startTime;
+            console.log(`[Merge Document Chunks] Merge thành công! (${(mergeTime / 1000).toFixed(2)}s)`);
+            console.log(`[Merge Document Chunks] Final URL: ${result.fileUrl}`);
+
+            return {
+                success: true,
+                fileUrl: result.fileUrl,
+                publicUrl: result.publicUrl || result.fileUrl
+            };
+
+        } catch (error) {
+            console.log(`[Merge Document Chunks] Merge error:`, error.message);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    },
+
+    // Cập nhật file_path của document sau khi merge chunks xong
+    updateDocumentFilePath: async (documentId, filePath) => {
+        try {
+            const { data, error } = await supabase
+                .from('documents')
+                .update({
+                    file_path: filePath,
+                    processing_status: 'completed',
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', documentId)
+                .select()
+                .single();
+
+            if (error) {
+                console.log('📄 [Update Document Path] ❌ Error:', error);
+                return { success: false, msg: error.message };
+            }
+
+            return { success: true, data };
+        } catch (error) {
+            console.log('📄 [Update Document Path] ❌ Error:', error);
+            return { success: false, msg: error.message };
+        }
+    },
+
+    // Cập nhật processing_status của document
+    updateDocumentProcessingStatus: async (documentId, status) => {
+        try {
+            const { data, error } = await supabase
+                .from('documents')
+                .update({
+                    processing_status: status,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', documentId)
+                .select()
+                .single();
+
+            if (error) {
+                console.log('📄 [Update Document Status] ❌ Error:', error);
+                return { success: false, msg: error.message };
+            }
+
+            console.log('📄 [Update Document Status] ✅ Updated processing_status:', status);
+            return { success: true, data };
+        } catch (error) {
+            console.log('📄 [Update Document Status] ❌ Error:', error);
+            return { success: false, msg: error.message };
         }
     },
 
@@ -334,8 +465,7 @@ export const documentService = {
                     download_count: 0,
                     rating: 0,
                     tags: documentData.tags || [],
-                    is_public: documentData.is_public !== false,
-                    processing_status: documentData.processing_status || 'completed'
+                    is_public: documentData.is_public !== false
                 })
                 .select()
                 .single();
@@ -377,33 +507,6 @@ export const documentService = {
             return { success: true, data };
         } catch (error) {
             console.log('Error in updateDocument:', error);
-            return { success: false, msg: error.message };
-        }
-    },
-
-    // Cập nhật file_path của tài liệu (sau khi merge chunks xong)
-    updateDocumentFilePath: async (documentId, filePath) => {
-        try {
-            const { data, error } = await supabase
-                .from('documents')
-                .update({
-                    file_path: filePath,
-                    processing_status: 'completed',
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', documentId)
-                .select()
-                .single();
-
-            if (error) {
-                console.log('Error updating document file_path:', error);
-                return { success: false, msg: error.message };
-            }
-
-            console.log('📄 [Document Upload] ✅ Updated document file_path và processing_status:', filePath);
-            return { success: true, data };
-        } catch (error) {
-            console.log('Error in updateDocumentFilePath:', error);
             return { success: false, msg: error.message };
         }
     },
@@ -543,11 +646,9 @@ export const documentService = {
 
             // Tạo đường dẫn lưu file - thử documentDirectory trước, fallback về cacheDirectory
             let documentsDir = FileSystem.documentDirectory;
-            console.log('FileSystem.documentDirectory:', documentsDir);
             
             if (!documentsDir) {
                 documentsDir = FileSystem.cacheDirectory;
-                console.log('FileSystem.cacheDirectory:', documentsDir);
             }
             
             if (!documentsDir) {
@@ -562,10 +663,6 @@ export const documentService = {
             const localFileName = `${timestamp}_${sanitizedFileName}`;
             const localFilePath = `${documentsDir}${localFileName}`;
 
-            console.log('Downloading file from:', fileUrl);
-            console.log('Saving to:', localFilePath);
-            console.log('Using directory:', documentsDir === FileSystem.documentDirectory ? 'documentDirectory' : 'cacheDirectory');
-
             // Kiểm tra URL có hợp lệ không bằng cách fetch HEAD request
             try {
                 const headResponse = await fetch(fileUrl, { method: 'HEAD' });
@@ -574,9 +671,6 @@ export const documentService = {
                     return { success: false, msg: `Không thể truy cập file. Lỗi: ${headResponse.status} ${headResponse.statusText}` };
                 }
                 const contentLength = headResponse.headers.get('content-length');
-                if (contentLength) {
-                    console.log('Expected file size:', contentLength, 'bytes');
-                }
             } catch (fetchError) {
                 console.warn('Could not check URL with HEAD request:', fetchError.message);
                 // Tiếp tục download dù không check được
@@ -595,15 +689,8 @@ export const documentService = {
                 return { success: false, msg: 'Download thất bại: Không nhận được file' };
             }
 
-            console.log('Download completed:', downloadResult.uri);
-
             // Kiểm tra file size sau khi download
             const downloadedFileInfo = await FileSystem.getInfoAsync(downloadResult.uri);
-            console.log('Downloaded file info:', {
-                exists: downloadedFileInfo.exists,
-                size: downloadedFileInfo.size,
-                uri: downloadResult.uri
-            });
 
             if (!downloadedFileInfo.exists) {
                 return { success: false, msg: 'Download thất bại: File không tồn tại sau khi tải' };

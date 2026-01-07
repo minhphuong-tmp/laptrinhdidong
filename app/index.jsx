@@ -19,6 +19,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { View } from 'react-native';
+import uploadResumeService from '../services/uploadResumeService';
 
 const index = () => {
   const router = useRouter();
@@ -26,6 +27,9 @@ const index = () => {
 
   React.useEffect(() => {
     if (!loading) {
+      // App đã sẵn sàng (auth check xong) → bắt đầu resume upload nếu có
+      uploadResumeService.startResume();
+      
       if (user) {
         router.replace('/(main)/home');
       } else {

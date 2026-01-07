@@ -523,7 +523,6 @@ const Home = () => {
                 hasPrefetchedCheckedRef.current = false;
                 await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
                 cacheClearedOnMountRef.current = true; // Đánh dấu đã xóa cache
-                console.log('[Home] Đã xóa cache và reset prefetch flag khi reload app');
             } catch (error) {
                 console.log('[Home] Lỗi khi xóa cache khi reload:', error);
             }
@@ -555,7 +554,6 @@ const Home = () => {
 
             // Khi app chuyển sang background hoặc inactive → clear cache và reset prefetch flag
             if (previousState === 'active' && (nextAppState === 'background' || nextAppState === 'inactive')) {
-                console.log('[Home] App chuyển sang background, đang xóa cache...');
                 try {
                     const { clearAllCache } = require('../../utils/cacheHelper');
                     await clearAllCache(user.id);
@@ -563,7 +561,6 @@ const Home = () => {
                     hasPrefetchedRef.current = false;
                     hasPrefetchedCheckedRef.current = false;
                     await AsyncStorage.removeItem(`hasPrefetched_${user.id}`);
-                    console.log('[Home] Đã xóa cache và reset prefetch flag');
                 } catch (error) {
                     console.log('[Home] Lỗi khi xóa cache:', error);
                 }
@@ -571,7 +568,6 @@ const Home = () => {
 
             // Khi app quay lại active → prefetch lại cache
             if (previousState !== 'active' && nextAppState === 'active') {
-                console.log('[Home] App quay lại active, sẽ prefetch lại cache...');
                 // Reset flag để prefetch lại
                 hasPrefetchedRef.current = false;
                 hasPrefetchedCheckedRef.current = false;

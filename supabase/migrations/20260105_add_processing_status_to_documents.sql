@@ -14,3 +14,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_processing_status
 ON documents(processing_status) 
 WHERE processing_status = 'processing';
 
+
+
+
+

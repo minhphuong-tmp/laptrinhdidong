@@ -1,6 +1,8 @@
 import * as DocumentPicker from 'expo-document-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useDocumentContext } from '../../context/DocumentContext';
 import {
     ActivityIndicator,
     Alert,
@@ -14,14 +16,17 @@ import {
 } from 'react-native';
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
+import UploadSuccessModal from '../../components/UploadSuccessModal';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { documentService } from '../../services/documentService';
+import uploadResumeService from '../../services/uploadResumeService';
 
 const UploadDocument = () => {
     const { user } = useAuth();
     const router = useRouter();
+    const { addNewDocument, updateDocument } = useDocumentContext();
 
     // Form state
     const [title, setTitle] = useState('');
@@ -36,6 +41,7 @@ const UploadDocument = () => {
     const [error, setError] = useState('');
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStatus, setUploadStatus] = useState(''); // 'uploading', 'processing', 'completed'
+    const [uploadSuccessModal, setUploadSuccessModal] = useState({ visible: false, title: '', message: '' });
 
     const categories = ['Lý thuyết', 'Thực hành', 'Video', 'Thi cử'];
 
@@ -106,17 +112,131 @@ const UploadDocument = () => {
         setUploadProgress(0);
         setUploadStatus('uploading');
 
+        // Track thời gian bắt đầu upload
+        const uploadStartTime = Date.now();
+
         try {
-            // 1. Upload file lên Supabase Storage
+            // 1. Parse tags từ string thành array
             const fileExtension = getFileExtension(selectedFile.name);
             const fileName = `${Date.now()}_${selectedFile.name}`;
             const fileSize = selectedFile.size || 0;
+            const tagsArray = tags
+                .split(',')
+                .map(tag => tag.trim())
+                .filter(tag => tag.length > 0);
 
-            console.log('Uploading file:', fileName);
 
-            // Lưu documentId để update sau khi merge xong
-            let savedDocumentId = null;
+            // 2. Tạo document record NGAY (trước khi upload) để user có thể quay lại sử dụng app
+            const isChunked = fileSize >= 5 * 1024 * 1024; // >= 5MB
+            const documentData = {
+                title: title.trim(),
+                description: description.trim(),
+                category: category,
+                file_type: fileExtension,
+                file_size: fileSize,
+                file_path: isChunked ? 'processing' : '', // Tạm thời, sẽ update sau
+                tags: tagsArray,
+                is_public: isPublic,
+                processing_status: isChunked ? 'processing' : 'pending' // 'processing' nếu chunk upload, 'pending' nếu file nhỏ
+            };
 
+            const createResult = await documentService.addDocument(documentData);
+            if (!createResult.success) {
+                setError(createResult.msg || 'Không thể tạo bản ghi tài liệu');
+                setLoading(false);
+                setUploadStatus('');
+                return;
+            }
+
+            const savedDocumentId = createResult.data?.id;
+            const savedDocument = createResult.data;
+
+            // Format document data để thêm vào state ngay (giống format từ getAllDocuments)
+            const newDocumentData = {
+                id: savedDocument.id,
+                title: savedDocument.title,
+                type: savedDocument.file_type || 'pdf',
+                size: savedDocument.file_size ? `${(savedDocument.file_size / 1024 / 1024).toFixed(1)} MB` : 'N/A',
+                uploadDate: new Date(savedDocument.upload_date || savedDocument.created_at).toLocaleDateString('vi-VN'),
+                uploader: user?.name || 'N/A',
+                downloads: savedDocument.download_count || 0,
+                category: savedDocument.category || 'Lý thuyết',
+                description: savedDocument.description || '',
+                filePath: savedDocument.file_path,
+                rating: savedDocument.rating || 0,
+                tags: savedDocument.tags || [],
+                processingStatus: savedDocument.processing_status || 'completed'
+            };
+
+            // Thêm document vào context ngay (không cần AsyncStorage)
+            addNewDocument(newDocumentData);
+
+            // 3. Nếu là file lớn (chunk upload), lưu state và cho user quay lại ngay
+            if (isChunked) {
+                // Bắt đầu upload ở background (không await)
+                documentService.uploadDocumentFile(
+                    selectedFile.uri,
+                    user.id,
+                    fileName,
+                    fileSize,
+                    (progress) => {
+                        // Progress callback (không cần update UI vì user đã quay lại)
+                    },
+                    // Callback khi merge xong (chỉ cho file lớn)
+                    async (fileUrl, finalPath) => {
+                        // Update document file_path và processing_status sau khi merge xong
+                        if (savedDocumentId) {
+                            try {
+                                await documentService.updateDocumentFilePath(savedDocumentId, finalPath);
+                                // Update document trong context để UI cập nhật ngay
+                                updateDocument(savedDocumentId, {
+                                    filePath: finalPath,
+                                    processingStatus: 'completed'
+                                });
+                            } catch (updateError) {
+                                console.log('📄 [Document Upload] ⚠️ Không thể update file_path:', updateError.message);
+                            }
+                        }
+                    }
+                ).catch(async (error) => {
+                    // Nếu upload fail, update document status thành 'failed'
+                    console.error('📄 [Document Upload] ❌ Upload failed:', error);
+                    if (savedDocumentId) {
+                        await documentService.updateDocumentProcessingStatus(savedDocumentId, 'failed');
+                    }
+                });
+
+                // Update metadata trong upload state với documentId
+                const currentState = uploadResumeService.currentUploadState;
+                if (currentState) {
+                    currentState.metadata = {
+                        ...currentState.metadata,
+                        documentId: savedDocumentId,
+                        title: title.trim(),
+                        description: description.trim(),
+                        category: category,
+                        fileType: fileExtension,
+                        tags: tagsArray,
+                        isPublic: isPublic
+                    };
+                    await uploadResumeService.saveUploadState();
+                }
+
+                // Log thời gian từ lúc bắt đầu đến khi lưu xong state và hiển thị modal
+                const timeToShowModal = ((Date.now() - uploadStartTime) / 1000).toFixed(2);
+                console.log(`Thời gian lưu STATE: ${timeToShowModal}s`);
+
+                // Hiển thị modal và cho user quay lại ngay
+                setLoading(false);
+                setUploadSuccessModal({
+                    visible: true,
+                    title: 'Đã bắt đầu upload',
+                    message: 'Tài liệu đã được thêm vào danh sách. File đang được tải lên và xử lý ở background. Bạn có thể tiếp tục sử dụng ứng dụng.'
+                });
+                return; // Dừng ở đây, upload sẽ chạy ở background
+            }
+
+            // 4. Nếu là file nhỏ, upload bình thường và đợi kết quả
             const uploadResult = await documentService.uploadDocumentFile(
                 selectedFile.uri,
                 user.id,
@@ -133,18 +253,7 @@ const UploadDocument = () => {
                         setUploadStatus('completed');
                     }
                 },
-                // Callback khi merge xong (chỉ cho file lớn)
-                async (fileUrl, finalPath) => {
-                    // Update document file_path sau khi merge xong
-                    if (savedDocumentId) {
-                        try {
-                            await documentService.updateDocumentFilePath(savedDocumentId, finalPath);
-                            console.log('📄 [Document Upload] ✅ Updated document file_path sau khi merge');
-                        } catch (updateError) {
-                            console.log('📄 [Document Upload] ⚠️ Không thể update file_path:', updateError.message);
-                        }
-                    }
-                }
+                null // File nhỏ không có merge callback
             );
 
             if (!uploadResult.success) {
@@ -154,76 +263,21 @@ const UploadDocument = () => {
                 return;
             }
 
-            // 2. Parse tags từ string thành array
-            const tagsArray = tags
-                .split(',')
-                .map(tag => tag.trim())
-                .filter(tag => tag.length > 0);
-
-            // 3. Tạo bản ghi trong bảng documents
-            const documentData = {
-                title: title.trim(),
-                description: description.trim(),
-                category: category,
-                file_type: fileExtension,
-                file_size: fileSize,
-                file_path: uploadResult.data, // Đường dẫn từ upload (sẽ được update sau khi merge xong nếu là chunk upload)
-                tags: tagsArray,
-                is_public: isPublic,
-                processing_status: uploadResult.isChunked ? 'processing' : 'completed' // Set processing status nếu là chunk upload
-            };
-
-            const createResult = await documentService.addDocument(documentData);
-
-            if (!createResult.success) {
-                setError(createResult.msg || 'Không thể tạo bản ghi tài liệu');
-                setLoading(false);
-                setUploadStatus('');
-                return;
+            // 5. Update file_path cho document (file nhỏ upload xong ngay)
+            if (savedDocumentId) {
+                await documentService.updateDocumentFilePath(savedDocumentId, uploadResult.data);
             }
 
-            // Lưu documentId để update sau khi merge xong
-            savedDocumentId = createResult.data?.id;
-
-            // 4. Kiểm tra xem có phải chunk upload không
-            if (uploadResult.isChunked) {
-                // File lớn - chunks đã upload xong (80%), merge đang chạy ở background
-                // Hiển thị thông báo thành công ngay và quay lại
-                setUploadStatus('completed');
-                setUploadProgress(80); // Chunks upload xong
-                setLoading(false);
-                
-                Alert.alert(
-                    'Upload thành công',
-                    'Chunks đã được tải lên thành công! File đang được xử lý ở background. Bạn có thể tiếp tục sử dụng ứng dụng.',
-                    [
-                        {
-                            text: 'OK',
-                            onPress: () => {
-                                router.back();
-                            }
-                        }
-                    ]
-                );
-            } else {
-                // File nhỏ - upload xong hoàn toàn
-                setUploadStatus('completed');
-                setUploadProgress(100);
-                
-                Alert.alert(
-                    'Thành công',
-                    'Đã tải lên tài liệu thành công!',
-                    [
-                        {
-                            text: 'OK',
-                            onPress: () => {
-                                setLoading(false);
-                                router.back();
-                            }
-                        }
-                    ]
-                );
-            }
+            // 6. File nhỏ upload xong hoàn toàn
+            setUploadStatus('completed');
+            setUploadProgress(100);
+            
+            // Hiển thị modal thành công
+            setUploadSuccessModal({
+                visible: true,
+                title: 'Thành công',
+                message: 'Đã tải lên tài liệu thành công!'
+            });
         } catch (error) {
             console.error('Error uploading document:', error);
             setError('Có lỗi xảy ra: ' + error.message);
@@ -334,7 +388,7 @@ const UploadDocument = () => {
                         onPress={handlePickDocument}
                         disabled={loading}
                     >
-                        <Icon name="file" size={hp(2.5)} color={theme.colors.primary} />
+                        <Icon name="file-text" size={hp(2.5)} color={theme.colors.primary} />
                         <Text style={styles.filePickerText}>
                             {selectedFile ? 'Đã chọn file' : 'Chọn file tài liệu'}
                         </Text>
@@ -343,7 +397,7 @@ const UploadDocument = () => {
                     {selectedFile && (
                         <View style={styles.fileInfo}>
                             <View style={styles.fileInfoRow}>
-                                <Icon name="file" size={hp(2)} color={theme.colors.textSecondary} />
+                                <Icon name="file-text" size={hp(2)} color={theme.colors.textSecondary} />
                                 <Text style={styles.fileName} numberOfLines={1}>
                                     {selectedFile.name}
                                 </Text>
@@ -388,7 +442,7 @@ const UploadDocument = () => {
                 {/* Error Message */}
                 {error ? (
                     <View style={styles.errorContainer}>
-                        <Icon name="alert-circle" size={hp(2)} color={theme.colors.error} />
+                        <Icon name="bell" size={hp(2)} color={theme.colors.error} />
                         <Text style={styles.errorText}>{error}</Text>
                     </View>
                 ) : null}
@@ -403,17 +457,30 @@ const UploadDocument = () => {
                         <ActivityIndicator size="small" color="white" />
                     ) : (
                         <>
-                            <Icon name="upload" size={hp(2)} color="white" />
+                            <Icon name="plus" size={hp(2)} color="white" />
                             <Text style={styles.uploadButtonText}>Tải lên tài liệu</Text>
                         </>
                     )}
                 </TouchableOpacity>
-            </ScrollView>
-        </View>
-    );
-};
+                    </ScrollView>
 
-const styles = StyleSheet.create({
+                    {/* Upload Success Modal */}
+                    <UploadSuccessModal
+                        visible={uploadSuccessModal.visible}
+                        title={uploadSuccessModal.title}
+                        message={uploadSuccessModal.message}
+                        onClose={() => {
+                            // Đóng modal và navigate ngay lập tức
+                            setUploadSuccessModal({ visible: false, title: '', message: '' });
+                            // Navigate ngay, không cần đợi modal đóng
+                            router.replace('/(main)/documents');
+                        }}
+                    />
+                </View>
+            );
+        };
+
+        const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: theme.colors.background,

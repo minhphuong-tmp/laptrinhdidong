@@ -1,5 +1,6 @@
-import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { useDocumentContext } from '../../context/DocumentContext';
 import {
     ActivityIndicator,
     Alert,
@@ -14,16 +15,20 @@ import {
 } from 'react-native';
 import Icon from '../../assets/icons';
 import Header from '../../components/Header';
+import Toast from '../../components/Toast';
+import DownloadSuccessModal from '../../components/DownloadSuccessModal';
 import { supabaseUrl } from '../../constants';
 import { theme } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { hp, wp } from '../../helpers/common';
 import { documentService } from '../../services/documentService';
 import { loadDocumentsCache } from '../../utils/cacheHelper';
+import uploadResumeService from '../../services/uploadResumeService';
 
 const Documents = () => {
     const { user } = useAuth();
     const router = useRouter();
+    const { newDocument, clearNewDocument, documentUpdate, clearDocumentUpdate, updateDocument } = useDocumentContext();
     // State cho dữ liệu từ database
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -31,22 +36,59 @@ const Documents = () => {
     const [searchText, setSearchText] = useState('');
     const [filteredDocuments, setFilteredDocuments] = useState([]);
     const [selectedCategory, setSelectedCategory] = useState('Tất cả');
+    const [downloadingIds, setDownloadingIds] = useState(new Set()); // Track documents đang download
+    const [toast, setToast] = useState({ visible: false, message: '', type: 'info' });
+    const [downloadModal, setDownloadModal] = useState({ visible: false, title: '', message: '', onOpenFile: null });
 
     // Categories cho filter
     const categories = ['Tất cả', 'Lý thuyết', 'Thực hành', 'Video', 'Thi cử'];
 
-    // Load dữ liệu từ database
+    // Thêm document mới từ context vào state ngay (khi có)
+    useEffect(() => {
+        if (newDocument) {
+            // Kiểm tra xem đã có document này chưa (tránh duplicate)
+            setDocuments(prev => {
+                const exists = prev.some(doc => doc.id === newDocument.id);
+                if (exists) return prev;
+                return [newDocument, ...prev];
+            });
+            setFilteredDocuments(prev => {
+                const exists = prev.some(doc => doc.id === newDocument.id);
+                if (exists) return prev;
+                return [newDocument, ...prev];
+            });
+            clearNewDocument();
+        }
+    }, [newDocument, clearNewDocument]);
+
+    // Update document trong state khi có update từ context (sau khi merge xong)
+    useEffect(() => {
+        if (documentUpdate) {
+            const { documentId, updates } = documentUpdate;
+            setDocuments(prev => prev.map(doc => 
+                doc.id === documentId ? { ...doc, ...updates } : doc
+            ));
+            setFilteredDocuments(prev => prev.map(doc => 
+                doc.id === documentId ? { ...doc, ...updates } : doc
+            ));
+            clearDocumentUpdate();
+        }
+    }, [documentUpdate, clearDocumentUpdate]);
+
+    // Load dữ liệu từ database khi mount
     useEffect(() => {
         loadDocuments();
+        
+        // Setup callback để update document khi resume merge xong
+        uploadResumeService.setDocumentUpdateCallback((documentId, updates) => {
+            updateDocument(documentId, updates);
+        });
+        
+        return () => {
+            // Cleanup: remove callback khi unmount
+            uploadResumeService.setDocumentUpdateCallback(null);
+        };
     }, []);
-
-    // Refresh khi quay về từ UploadDocument
-    useFocusEffect(
-        useCallback(() => {
-            // Force refresh khi quay về, không dùng cache để đảm bảo document mới xuất hiện ngay
-            loadDocuments(false);
-        }, [])
-    );
 
     const loadDocuments = async (useCache = true) => {
         setLoading(true);
@@ -99,155 +141,92 @@ const Documents = () => {
         applyFilters(searchText, category);
     };
 
-    const handlePreview = async (document) => {
-        try {
-            // Nếu document đang processing, fetch lại từ DB để check status mới nhất
-            if (document.isProcessing) {
-                const freshDocument = await documentService.getDocumentById(document.id);
-                if (freshDocument.success && freshDocument.data) {
-                    // Nếu vẫn đang processing, hiển thị Alert
-                    if (freshDocument.data.isProcessing) {
-                        Alert.alert(
-                            'Server đang xử lý',
-                            'File đang được xử lý ở server. Vui lòng thử lại sau.',
-                            [{ text: 'OK', style: 'default' }]
-                        );
-                        return;
-                    }
-                    // Nếu đã completed, update document trong state và tiếp tục preview
-                    document = freshDocument.data;
-                    // Update document trong state để UI refresh (dùng functional update)
-                    setDocuments(prevDocuments => {
-                        const updatedDocuments = prevDocuments.map(doc => 
-                            doc.id === document.id ? document : doc
-                        );
-                        // Update filteredDocuments với documents mới
-                        let filtered = updatedDocuments;
-                        if (searchText.trim() !== '') {
-                            filtered = filtered.filter(doc =>
-                                doc.title.toLowerCase().includes(searchText.toLowerCase()) ||
-                                doc.category.toLowerCase().includes(searchText.toLowerCase()) ||
-                                doc.type.toLowerCase().includes(searchText.toLowerCase())
-                            );
-                        }
-                        if (selectedCategory !== 'Tất cả') {
-                            filtered = filtered.filter(doc => doc.category === selectedCategory);
-                        }
-                        setFilteredDocuments(filtered);
-                        return updatedDocuments;
-                    });
-                } else {
-                    // Không fetch được, vẫn hiển thị Alert
-                    Alert.alert(
-                        'Server đang xử lý',
-                        'File đang được xử lý ở server. Vui lòng thử lại sau.',
-                        [{ text: 'OK', style: 'default' }]
-                    );
-                    return;
-                }
-            }
+    const showToast = (message, type = 'info') => {
+        setToast({ visible: true, message, type });
+    };
 
+    const hideToast = () => {
+        setToast({ visible: false, message: '', type: 'info' });
+    };
+
+    const handlePreview = async (document) => {
+        // Kiểm tra processing status hoặc filePath = 'processing'
+        if (document.processingStatus === 'processing' || document.filePath === 'processing') {
+            showToast('Server đang xử lý. Vui lòng đợi và thử lại sau.', 'warning');
+            return;
+        }
+
+        if (document.processingStatus === 'failed') {
+            showToast('Tài liệu xử lý thất bại. Vui lòng thử upload lại.', 'error');
+            return;
+        }
+
+        try {
             console.log('=== PREVIEW DEBUG ===');
             console.log('Document:', document);
             console.log('Document filePath:', document.filePath);
 
             // Tạo URL preview từ Supabase Storage
-            // Bucket là 'media' (documents được upload vào bucket media)
+            // Bucket là 'media', path là documents/uploader_id/file_name
             const fileUrl = `${supabaseUrl}/storage/v1/object/public/media/${document.filePath}`;
             console.log('Preview URL:', fileUrl);
 
-            // Dùng Google Docs Viewer để preview PDF trong browser (không tải về)
-            // Google Docs Viewer sẽ hiển thị PDF trực tiếp trong browser
-            const previewUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(fileUrl)}&embedded=true`;
-            console.log('Google Docs Viewer URL:', previewUrl);
-
             // Mở URL trong browser để preview
-            try {
-                const supported = await Linking.canOpenURL(previewUrl);
-                if (supported) {
-                    await Linking.openURL(previewUrl);
-                    // Browser sẽ mở Google Docs Viewer để preview PDF
-                } else {
-                    Alert.alert('Lỗi', 'Không thể mở tài liệu trong trình duyệt');
-                }
-            } catch (error) {
-                console.error('Error opening URL:', error);
-                Alert.alert('Lỗi', `Không thể mở tài liệu: ${error.message}`);
+            const canOpen = await Linking.canOpenURL(fileUrl);
+            console.log('Can open URL:', canOpen);
+
+            if (canOpen) {
+                await Linking.openURL(fileUrl);
+                showToast('Đang mở tài liệu trong trình duyệt', 'info');
+            } else {
+                showToast('Không thể mở tài liệu', 'error');
             }
 
         } catch (error) {
             console.error('Preview error:', error);
-            Alert.alert('Lỗi', `Không thể mở tài liệu: ${error.message}`);
+            showToast(`Không thể mở tài liệu: ${error.message}`, 'error');
         }
     };
 
     const handleDownload = async (document) => {
-        try {
-            // Nếu document đang processing, fetch lại từ DB để check status mới nhất
-            if (document.isProcessing) {
-                const freshDocument = await documentService.getDocumentById(document.id);
-                if (freshDocument.success && freshDocument.data) {
-                    // Nếu vẫn đang processing, hiển thị Alert
-                    if (freshDocument.data.isProcessing) {
-                        Alert.alert(
-                            'Server đang xử lý',
-                            'File đang được xử lý ở server. Vui lòng thử lại sau.',
-                            [{ text: 'OK', style: 'default' }]
-                        );
-                        return;
-                    }
-                    // Nếu đã completed, update document trong state và tiếp tục download
-                    document = freshDocument.data;
-                    // Update document trong state để UI refresh (dùng functional update)
-                    setDocuments(prevDocuments => {
-                        const updatedDocuments = prevDocuments.map(doc => 
-                            doc.id === document.id ? document : doc
-                        );
-                        // Update filteredDocuments với documents mới
-                        let filtered = updatedDocuments;
-                        if (searchText.trim() !== '') {
-                            filtered = filtered.filter(doc =>
-                                doc.title.toLowerCase().includes(searchText.toLowerCase()) ||
-                                doc.category.toLowerCase().includes(searchText.toLowerCase()) ||
-                                doc.type.toLowerCase().includes(searchText.toLowerCase())
-                            );
-                        }
-                        if (selectedCategory !== 'Tất cả') {
-                            filtered = filtered.filter(doc => doc.category === selectedCategory);
-                        }
-                        setFilteredDocuments(filtered);
-                        return updatedDocuments;
-                    });
-                } else {
-                    // Không fetch được, vẫn hiển thị Alert
-                    Alert.alert(
-                        'Server đang xử lý',
-                        'File đang được xử lý ở server. Vui lòng thử lại sau.',
-                        [{ text: 'OK', style: 'default' }]
-                    );
-                    return;
-                }
-            }
+        // Kiểm tra processing status hoặc filePath = 'processing'
+        if (document.processingStatus === 'processing' || document.filePath === 'processing') {
+            showToast('Server đang xử lý. Vui lòng đợi và thử lại sau.', 'warning');
+            return;
+        }
 
-            console.log('=== DOWNLOAD DEBUG ===');
-            console.log('Document:', document);
-            console.log('Document filePath:', document.filePath);
-            
-            // Lấy thông tin document đầy đủ từ database để có uploader_id chính xác
+        if (document.processingStatus === 'failed') {
+            showToast('Tài liệu xử lý thất bại. Vui lòng thử upload lại.', 'error');
+            return;
+        }
+
+        // Kiểm tra xem đang download chưa
+        if (downloadingIds.has(document.id)) {
+            return; // Đang download rồi, không làm gì
+        }
+
+        // Bắt đầu download - set loading
+        setDownloadingIds(prev => new Set(prev).add(document.id));
+
+        try {
+            // Lấy thông tin document đầy đủ từ database để có uploader_id và filePath chính xác
             const fullDocumentInfo = await documentService.getDocumentById(document.id);
             let actualUploaderId = null;
+            let filePath = document.filePath;
+            
             if (fullDocumentInfo.success && fullDocumentInfo.data) {
                 actualUploaderId = fullDocumentInfo.data.uploaderId;
-                console.log('Full document info from DB:', fullDocumentInfo.data);
-                console.log('Actual uploader_id:', actualUploaderId);
+                // Nếu filePath trong state rỗng, lấy từ database
+                if ((!filePath || filePath.trim() === '' || filePath === 'processing') && fullDocumentInfo.data.filePath) {
+                    filePath = fullDocumentInfo.data.filePath;
+                }
             }
-
-            // Tạo URL download từ Supabase Storage
-            // Bucket là 'media' (documents được upload vào bucket media)
-            // Path có thể là:
-            // - documents/uploader_id/file_name (format mới)
-            // - documents/file_name (format cũ, thiếu uploader_id)
-            let filePath = document.filePath;
+            
+            // Kiểm tra nếu filePath vẫn rỗng hoặc không hợp lệ
+            if (!filePath || filePath.trim() === '' || filePath === 'processing') {
+                showToast('File chưa sẵn sàng để tải về. Vui lòng thử lại sau.', 'error');
+                return;
+            }
             
             // Nếu filePath không bắt đầu bằng 'documents/', thêm vào
             if (!filePath.startsWith('documents/')) {
@@ -255,80 +234,59 @@ const Documents = () => {
             }
             
             // Kiểm tra xem filePath có chứa uploader_id không (có 2 dấu / sau documents/)
-            const pathParts = filePath.split('/');
+            const pathParts = filePath.split('/').filter(part => part.length > 0); // Filter empty parts
             let fileUrl = `${supabaseUrl}/storage/v1/object/public/media/${filePath}`;
-            
-            console.log('=== DOWNLOAD URL DEBUG ===');
-            console.log('Supabase URL:', supabaseUrl);
-            console.log('Original filePath:', document.filePath);
-            console.log('Processed filePath:', filePath);
-            console.log('Path parts:', pathParts);
-            console.log('Full download URL:', fileUrl);
             
             // Test URL bằng cách fetch HEAD
             let urlFound = false;
             try {
                 let testResponse = await fetch(fileUrl, { method: 'HEAD' });
-                console.log('URL test response:', {
-                    status: testResponse.status,
-                    statusText: testResponse.statusText,
-                    contentType: testResponse.headers.get('content-type'),
-                    contentLength: testResponse.headers.get('content-length')
-                });
                 
                 if (testResponse.ok) {
                     urlFound = true;
-                } else if (testResponse.status === 400 && pathParts.length === 2) {
+                } else if (testResponse.status === 400 && pathParts.length >= 2) {
                     // Thử các format khác nhau
-                    const fileName = pathParts[1];
+                    const fileName = pathParts[pathParts.length - 1]; // Lấy phần cuối cùng (tên file)
                     const alternatives = [];
                     
                     // 1. Thử với uploader_id từ database
-                    if (actualUploaderId) {
+                    if (actualUploaderId && fileName) {
                         alternatives.push(`documents/${actualUploaderId}/${fileName}`);
                     }
                     
                     // 2. Thử với user.id hiện tại
-                    if (user?.id && user.id !== actualUploaderId) {
+                    if (user?.id && user.id !== actualUploaderId && fileName) {
                         alternatives.push(`documents/${user.id}/${fileName}`);
                     }
                     
                     // 3. Thử file trực tiếp trong bucket (không có folder documents/)
-                    alternatives.push(fileName);
-                    
-                    // 4. Thử file trực tiếp trong documents/ (đã có)
-                    // alternatives.push(filePath); // Đã thử rồi
-                    
-                    console.log('Thử các URL thay thế:', alternatives);
+                    if (fileName) {
+                        alternatives.push(fileName);
+                    }
                     
                     for (const altPath of alternatives) {
                         const alternativeUrl = `${supabaseUrl}/storage/v1/object/public/media/${altPath}`;
-                        console.log('Thử URL:', alternativeUrl);
                         
                         try {
                             const altResponse = await fetch(alternativeUrl, { method: 'HEAD' });
                             if (altResponse.ok) {
-                                console.log('✅ URL thay thế thành công:', alternativeUrl);
                                 filePath = altPath;
                                 fileUrl = alternativeUrl;
                                 urlFound = true;
                                 break;
-                            } else {
-                                console.log('❌ URL thay thế lỗi:', altResponse.status);
                             }
                         } catch (altError) {
-                            console.log('❌ URL thay thế exception:', altError.message);
+                            // Ignore errors
                         }
                     }
                 }
                 
                 if (!urlFound) {
-                    Alert.alert('Lỗi', `Không thể truy cập file. File có thể không tồn tại hoặc URL không đúng. Vui lòng kiểm tra lại.`);
+                    showToast('Không thể truy cập file. File có thể không tồn tại hoặc URL không đúng.', 'error');
                     return;
                 }
             } catch (urlError) {
-                console.error('URL test error:', urlError);
-                Alert.alert('Lỗi', `Không thể kiểm tra URL: ${urlError.message}`);
+                showToast(`Không thể kiểm tra URL: ${urlError.message}`, 'error');
                 return;
             }
 
@@ -339,7 +297,7 @@ const Documents = () => {
             const downloadResult = await documentService.downloadDocumentFile(fileUrl, fileName);
 
             if (!downloadResult.success) {
-                Alert.alert('Lỗi', downloadResult.msg || 'Không thể tải tài liệu');
+                showToast(downloadResult.msg || 'Không thể tải tài liệu', 'error');
                 return;
             }
 
@@ -367,59 +325,51 @@ const Documents = () => {
                     const durationInfo = mediaLibraryResult.duration > 0 
                         ? ` (${Math.floor(mediaLibraryResult.duration)}s)` 
                         : '';
-                    Alert.alert(
-                        'Tải thành công',
-                        `Video "${document.title}"${durationInfo} đã được tải và lưu vào thư viện. Bạn có thể mở xem bằng ứng dụng video.`,
-                        [{ text: 'OK' }]
-                    );
+                    showToast(`Video "${document.title}"${durationInfo} đã được tải và lưu vào thư viện`, 'success');
                     return;
                 } else {
                     // Nếu lưu vào Media Library thất bại, vẫn hiển thị option mở file
                     console.log('Failed to save to Media Library:', mediaLibraryResult.msg);
-                    Alert.alert(
-                        'Tải thành công',
-                        `Video "${document.title}" đã được tải về máy. ${mediaLibraryResult.msg || 'Không thể lưu vào thư viện, nhưng bạn vẫn có thể mở file.'}`,
-                        [{ text: 'OK' }]
-                    );
+                    showToast(`Video "${document.title}" đã được tải về máy. ${mediaLibraryResult.msg || 'Không thể lưu vào thư viện, nhưng bạn vẫn có thể mở file.'}`, 'success');
                     return;
                 }
             }
 
-            // Hiển thị alert với option mở/share file (cho file không phải video hoặc lưu Media Library thất bại)
-            Alert.alert(
-                'Tải thành công',
-                `Tài liệu "${document.title}" đã được tải về máy.`,
-                [
-                    {
-                        text: 'Mở file',
-                        onPress: async () => {
-                            try {
-                                // Dùng Share từ react-native để mở/share file
-                                await Share.share({
-                                    url: downloadResult.localUri,
-                                    message: `Tài liệu: ${document.title}`
-                                });
-                            } catch (error) {
-                                console.error('Error sharing file:', error);
-                                // Fallback: thử mở bằng Linking nếu Share không hoạt động
-                                try {
-                                    await Linking.openURL(downloadResult.localUri);
-                                } catch (linkError) {
-                                    Alert.alert('Lỗi', 'Không thể mở file. File đã được lưu tại: ' + downloadResult.localUri);
-                                }
-                            }
+            // Hiển thị modal với option mở/share file (cho file không phải video hoặc lưu Media Library thất bại)
+            setDownloadModal({
+                visible: true,
+                title: 'Tải thành công',
+                message: `Tài liệu "${document.title}" đã được tải về máy.`,
+                onOpenFile: async () => {
+                    setDownloadModal({ visible: false, title: '', message: '', onOpenFile: null });
+                    try {
+                        // Dùng Share từ react-native để mở/share file
+                        await Share.share({
+                            url: downloadResult.localUri,
+                            message: `Tài liệu: ${document.title}`
+                        });
+                    } catch (error) {
+                        console.error('Error sharing file:', error);
+                        // Fallback: thử mở bằng Linking nếu Share không hoạt động
+                        try {
+                            await Linking.openURL(downloadResult.localUri);
+                        } catch (linkError) {
+                            showToast('Không thể mở file. File đã được lưu tại: ' + downloadResult.localUri, 'error');
                         }
-                    },
-                    {
-                        text: 'OK',
-                        style: 'cancel'
                     }
-                ]
-            );
+                }
+            });
 
         } catch (error) {
             console.error('Download error:', error);
-            Alert.alert('Lỗi', `Không thể tải tài liệu: ${error.message}`);
+            showToast(`Không thể tải tài liệu: ${error.message}`, 'error');
+        } finally {
+            // Tắt loading khi xong (thành công hoặc lỗi)
+            setDownloadingIds(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(document.id);
+                return newSet;
+            });
         }
     };
 
@@ -494,8 +444,13 @@ const Documents = () => {
                     <TouchableOpacity
                         style={styles.downloadButton}
                         onPress={() => handleDownload(item)}
+                        disabled={downloadingIds.has(item.id)}
                     >
-                        <Icon name="download" size={hp(1.8)} color={theme.colors.primary} />
+                        {downloadingIds.has(item.id) ? (
+                            <ActivityIndicator size="small" color={theme.colors.primary} />
+                        ) : (
+                            <Icon name="download" size={hp(1.8)} color={theme.colors.primary} />
+                        )}
                     </TouchableOpacity>
                     <TouchableOpacity
                         style={styles.downloadButton}
@@ -544,6 +499,19 @@ const Documents = () => {
     return (
         <View style={styles.container}>
             <Header title="Tài liệu CLB" showBackButton />
+            <Toast
+                visible={toast.visible}
+                message={toast.message}
+                type={toast.type}
+                onDismiss={hideToast}
+            />
+            <DownloadSuccessModal
+                visible={downloadModal.visible}
+                title={downloadModal.title}
+                message={downloadModal.message}
+                onOpenFile={downloadModal.onOpenFile}
+                onClose={() => setDownloadModal({ visible: false, title: '', message: '', onOpenFile: null })}
+            />
 
             <ScrollView
                 style={styles.scrollContainer}
