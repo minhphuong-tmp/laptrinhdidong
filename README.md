@@ -1,50 +1,87 @@
-# Welcome to your Expo app 👋
+# Ứng dụng CLB Tin học
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+## Thông tin dự án
+- Link GitHub: https://github.com/minhphuong-tmp/laptrinhweb
+- Số lượng thành viên: 01 (Full Stack Developer)
 
-## Get started
+## Công nghệ sử dụng
+### Frontend
+- HTML, CSS, Javascript, TypeScript
+- React Native (Sử dụng Expo)
+- ReactJS 19 (Hooks)
+- Redux (Quản lý trạng thái)
 
-1. Install dependencies
+### Backend
+- Node.js (Express)
+- JavaScript, TypeScript
+- NestJS
 
-   ```bash
-   npm install
-   ```
+### Database
+- Supabase
 
-2. Start the app
+## Mô tả chức năng chính
+Ứng dụng được xây dựng với đầy đủ tính năng của một mạng xã hội, được tối ưu hóa cho mô hình hoạt động của CLB Tin học.
 
-   ```bash
-   npx expo start
-   ```
+1. Chức năng Chat & Giao tiếp
+- Mã hóa đầu cuối (E2E Encryption): Đảm bảo tin nhắn chỉ được đọc trên thiết bị gửi và nhận. Dữ liệu lưu trữ tại Database hoàn toàn là mã hóa (cyphertext), không lưu plaintext.
+- Hỗ trợ đầy đủ: Gọi video (Video Call), Gọi thoại (Voice Call).
+- Chat nhóm, gửi hình ảnh, video, tin nhắn văn bản.
 
-In the output, you'll find options to open the app in a
+2. Hiệu năng & Trải nghiệm người dùng
+- Cơ chế Cache dữ liệu: Tối ưu tốc độ phản hồi từ ~800ms xuống còn ~40ms bằng cách ưu tiên lấy dữ liệu từ Cache.
+- Phân trang: Tối ưu hiển thị khi lướt xem danh sách bài viết dài.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+3. Quản lý tài khoản & Bảo mật
+- Đăng nhập: Hỗ trợ đăng nhập bằng tài khoản Google.
+- Xác thực: Sử dụng JWT (JSON Web Token).
+- Phân quyền người dùng:
+  - Chủ Nhiệm CLB: Có quyền quản lý cao nhất.
+  - Thành viên: Quyền hạn chế hơn.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+4. Tính năng Mạng xã hội
+- Bài viết: Đăng tải, Sửa, Xóa bài viết.
+- Tương tác: Bình luận, Thả tim (Like) bài viết.
+- Hồ sơ cá nhân: Xem và chỉnh sửa thông tin cá nhân.
+- Tìm kiếm: Tìm kiếm thành viên trong CLB.
 
-## Get a fresh project
+## Hướng dẫn cài đặt và chạy dự án
 
-When you're ready, run:
+### Yêu cầu môi trường
+- Node.js (Phiên bản LTS khuyến nghị)
+- Thiết bị Android thật hoặc Máy ảo (Emulator)
+- Ứng dụng Expo Go (nếu chạy thử nhanh) hoặc File APK Development Build (khuyến nghị cho tính năng native)
 
+### Các bước cài đặt
+
+1. Clone dự án và cài đặt thư viện
 ```bash
-npm run reset-project
+git clone https://github.com/minhphuong-tmp/laptrinhweb
+cd laptrinhdidong
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Cấu hình biến môi trường
+Tạo file .env và điền các thông tin cấu hình cần thiết (Supabase URL, API Keys, Google Auth Client ID...).
 
-## Learn more
+3. Chạy dự án với Development Build (Khuyến nghị)
+Để sử dụng đầy đủ các tính năng Native (như Camera, Voice Call, Notification), bạn cần chạy trên bản Development Build (file APK custom).
 
-To learn more about developing your project with Expo, look at the following resources:
+Bước 1: Cài đặt file APK Development Build lên thiết bị Android của bạn. (Nếu chưa có, cần build bằng lệnh `eas build --profile development --platform android`).
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Bước 2: Khởi chạy Development Server
+```bash
+npx expo start --dev-client
+```
 
-## Join the community
+Bước 3: Trên điện thoại, mở ứng dụng Development Build đã cài đặt và kết nối tới server (quét QR code hoặc nhập IP máy tính).
 
-Join our community of developers creating universal apps.
+4. Chạy dự án với Expo Go (Giới hạn tính năng)
+Nếu chỉ cần kiểm tra giao diện cơ bản:
+```bash
+npx expo start
+```
+Quét mã QR bằng ứng dụng Expo Go.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Lưu ý
+- Dự án sử dụng React Native với Expo.
+- Một số tính năng như Video Call hay E2E Encryption có thể yêu cầu chạy trên thiết bị thật để hoạt động chính xác nhất.
